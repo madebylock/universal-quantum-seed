@@ -25,6 +25,7 @@ References:
     - FIPS 197: Advanced Encryption Standard (AES)
 """
 
+import hmac as _hmac_mod
 import os
 
 try:
@@ -363,10 +364,7 @@ def aes_gcm_decrypt(
             computed_tag[i] ^= enc_j0[i]
 
         # Constant-time tag comparison
-        diff = 0
-        for i in range(16):
-            diff |= computed_tag[i] ^ received_tag[i]
-        if diff != 0:
+        if not _hmac_mod.compare_digest(bytes(computed_tag), bytes(received_tag)):
             raise RuntimeError("AES-GCM: authentication tag mismatch")
 
         # Decrypt
