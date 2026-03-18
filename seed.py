@@ -710,6 +710,14 @@ def _collect_entropy(n_bytes, extra_entropy=None):
     # Mix everything through SHA-512
     h = hashlib.sha512(pool)
 
+    # Wipe the entropy pool now that it's been hashed
+    try:
+        from crypto.secure_wipe import wipe
+        wipe(pool)
+    except ImportError:
+        for i in range(len(pool)):
+            pool[i] = 0
+
     # Fold in one final secrets call keyed on the digest
     # This ensures the output is at minimum as strong as secrets alone
     h.update(secrets.token_bytes(32))
@@ -846,15 +854,22 @@ def _stretch(prk):
     )
 
     # Stage 2: Argon2id on top of PBKDF2 output
-    return hash_secret_raw(
-        secret=stage1,
-        salt=salt + b"-argon2id",
-        time_cost=_ARGON2_TIME,
-        memory_cost=_ARGON2_MEMORY,
-        parallelism=_ARGON2_PARALLEL,
-        hash_len=_ARGON2_HASHLEN,
-        type=_Argon2Type.ID,
-    )
+    try:
+        return hash_secret_raw(
+            secret=stage1,
+            salt=salt + b"-argon2id",
+            time_cost=_ARGON2_TIME,
+            memory_cost=_ARGON2_MEMORY,
+            parallelism=_ARGON2_PARALLEL,
+            hash_len=_ARGON2_HASHLEN,
+            type=_Argon2Type.ID,
+        )
+    finally:
+        try:
+            from crypto.secure_wipe import wipe
+            wipe(stage1)
+        except ImportError:
+            pass
 
 
 def _to_indexes(seed):
@@ -972,6 +987,9 @@ def get_profile(master_key, profile_password):
     """
     if not profile_password:
         return master_key
+    # NFKC normalization prevents cross-platform derivation differences
+    # (e.g., macOS NFD vs Windows NFC for accented characters)
+    profile_password = unicodedata.normalize("NFKC", profile_password)
     payload = _DOMAIN + b"-profile" + profile_password.encode("utf-8")
     return hmac.new(master_key, payload, hashlib.sha512).digest()
 

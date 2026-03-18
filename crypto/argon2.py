@@ -449,6 +449,12 @@ def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
 
     result = _argon2_hash(_store_block(final_block), T)
 
+    # Wipe all sensitive memory blocks
+    for i in range(len(memory)):
+        memory[i] = 0
+    for i in range(len(final_block)):
+        final_block[i] = 0
+
     return result
 
 

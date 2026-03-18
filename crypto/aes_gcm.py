@@ -175,11 +175,34 @@ def _ghash(H: bytearray, data: bytes) -> bytearray:
 
 
 def _inc_ctr(ctr: bytearray) -> None:
-    """Increment the 32-bit big-endian counter in bytes 12..15."""
+    """Increment the 32-bit big-endian counter in bytes 12..15.
+
+    Raises OverflowError if the 32-bit counter wraps — continuing
+    would reuse keystream blocks, catastrophically breaking CTR mode.
+    """
     for i in range(15, 11, -1):
         ctr[i] = (ctr[i] + 1) & 0xFF
         if ctr[i] != 0:
-            break
+            return
+    raise OverflowError(
+        "AES-GCM: 32-bit counter exhausted (2^32 blocks). "
+        "Plaintext exceeds the NIST SP 800-38D maximum for a "
+        "single invocation (~64 GB). Use a new nonce."
+    )
+
+
+# NIST SP 800-38D maximum: 2^39 - 256 bits = (2^36 - 32) bytes
+_MAX_PLAINTEXT_BYTES = (1 << 36) - 32
+
+
+try:
+    from crypto.secure_wipe import wipe_all as _wipe_buf
+except ImportError:
+    def _wipe_buf(*bufs):
+        for b in bufs:
+            if isinstance(b, (bytearray, list)):
+                for i in range(len(b)):
+                    b[i] = 0
 
 
 def _pad16(length: int) -> int:
@@ -215,52 +238,58 @@ def aes_gcm_encrypt(
     if len(nonce) != 12:
         raise ValueError(f"Nonce must be 12 bytes, got {len(nonce)}")
 
+    if len(plaintext) > _MAX_PLAINTEXT_BYTES:
+        raise ValueError(
+            f"Plaintext ({len(plaintext)} bytes) exceeds NIST SP 800-38D "
+            f"maximum ({_MAX_PLAINTEXT_BYTES} bytes)")
+
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
         return cipher.encrypt(nonce, plaintext, aad or None)
 
     # Pure-Python fallback
     rk = _key_expansion(key)
-
-    # H = AES_K(0^128)
     H = bytearray(16)
     _aes_block(H, rk)
 
-    # J0 = nonce || 0x00000001
-    J0 = bytearray(16)
-    J0[:12] = nonce
-    J0[15] = 1
+    try:
+        # J0 = nonce || 0x00000001
+        J0 = bytearray(16)
+        J0[:12] = nonce
+        J0[15] = 1
 
-    # Encrypt with AES-CTR starting at J0+1
-    ct = bytearray(len(plaintext))
-    ctr = bytearray(J0)
-    for off in range(0, len(plaintext), 16):
-        _inc_ctr(ctr)
-        ks = bytearray(ctr)
-        _aes_block(ks, rk)
-        end = min(16, len(plaintext) - off)
-        for i in range(end):
-            ct[off + i] = plaintext[off + i] ^ ks[i]
+        # Encrypt with AES-CTR starting at J0+1
+        ct = bytearray(len(plaintext))
+        ctr = bytearray(J0)
+        for off in range(0, len(plaintext), 16):
+            _inc_ctr(ctr)
+            ks = bytearray(ctr)
+            _aes_block(ks, rk)
+            end = min(16, len(plaintext) - off)
+            for i in range(end):
+                ct[off + i] = plaintext[off + i] ^ ks[i]
 
-    # GHASH input: AAD (padded) || CT (padded) || len_AAD(64) || len_CT(64)
-    aad_pad = _pad16(len(aad))
-    ct_pad = _pad16(len(ct))
-    ghash_input = (
-        aad + b"\x00" * aad_pad
-        + bytes(ct) + b"\x00" * ct_pad
-        + (len(aad) * 8).to_bytes(8, "big")
-        + (len(ct) * 8).to_bytes(8, "big")
-    )
+        # GHASH input: AAD (padded) || CT (padded) || len_AAD(64) || len_CT(64)
+        aad_pad = _pad16(len(aad))
+        ct_pad = _pad16(len(ct))
+        ghash_input = (
+            aad + b"\x00" * aad_pad
+            + bytes(ct) + b"\x00" * ct_pad
+            + (len(aad) * 8).to_bytes(8, "big")
+            + (len(ct) * 8).to_bytes(8, "big")
+        )
 
-    tag = _ghash(H, ghash_input)
+        tag = _ghash(H, ghash_input)
 
-    # Tag = GHASH XOR AES_K(J0)
-    enc_j0 = bytearray(J0)
-    _aes_block(enc_j0, rk)
-    for i in range(16):
-        tag[i] ^= enc_j0[i]
+        # Tag = GHASH XOR AES_K(J0)
+        enc_j0 = bytearray(J0)
+        _aes_block(enc_j0, rk)
+        for i in range(16):
+            tag[i] ^= enc_j0[i]
 
-    return bytes(ct) + bytes(tag)
+        return bytes(ct) + bytes(tag)
+    finally:
+        _wipe_buf(rk, H)
 
 
 def aes_gcm_decrypt(
@@ -291,6 +320,11 @@ def aes_gcm_decrypt(
     if len(ciphertext) < 16:
         raise ValueError("Ciphertext too short (must include 16-byte tag)")
 
+    if len(ciphertext) - 16 > _MAX_PLAINTEXT_BYTES:
+        raise ValueError(
+            f"Ciphertext ({len(ciphertext) - 16} bytes payload) exceeds "
+            f"NIST SP 800-38D maximum ({_MAX_PLAINTEXT_BYTES} bytes)")
+
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
         return cipher.decrypt(nonce, ciphertext, aad or None)
@@ -300,48 +334,49 @@ def aes_gcm_decrypt(
     received_tag = ciphertext[-16:]
 
     rk = _key_expansion(key)
-
-    # H = AES_K(0^128)
     H = bytearray(16)
     _aes_block(H, rk)
 
-    # J0
-    J0 = bytearray(16)
-    J0[:12] = nonce
-    J0[15] = 1
+    try:
+        # J0
+        J0 = bytearray(16)
+        J0[:12] = nonce
+        J0[15] = 1
 
-    # Verify tag first
-    aad_pad = _pad16(len(aad))
-    ct_pad = _pad16(len(ct))
-    ghash_input = (
-        aad + b"\x00" * aad_pad
-        + ct + b"\x00" * ct_pad
-        + (len(aad) * 8).to_bytes(8, "big")
-        + (len(ct) * 8).to_bytes(8, "big")
-    )
+        # Verify tag first
+        aad_pad = _pad16(len(aad))
+        ct_pad = _pad16(len(ct))
+        ghash_input = (
+            aad + b"\x00" * aad_pad
+            + ct + b"\x00" * ct_pad
+            + (len(aad) * 8).to_bytes(8, "big")
+            + (len(ct) * 8).to_bytes(8, "big")
+        )
 
-    computed_tag = _ghash(H, ghash_input)
-    enc_j0 = bytearray(J0)
-    _aes_block(enc_j0, rk)
-    for i in range(16):
-        computed_tag[i] ^= enc_j0[i]
+        computed_tag = _ghash(H, ghash_input)
+        enc_j0 = bytearray(J0)
+        _aes_block(enc_j0, rk)
+        for i in range(16):
+            computed_tag[i] ^= enc_j0[i]
 
-    # Constant-time tag comparison
-    diff = 0
-    for i in range(16):
-        diff |= computed_tag[i] ^ received_tag[i]
-    if diff != 0:
-        raise RuntimeError("AES-GCM: authentication tag mismatch")
+        # Constant-time tag comparison
+        diff = 0
+        for i in range(16):
+            diff |= computed_tag[i] ^ received_tag[i]
+        if diff != 0:
+            raise RuntimeError("AES-GCM: authentication tag mismatch")
 
-    # Decrypt
-    plaintext = bytearray(len(ct))
-    ctr = bytearray(J0)
-    for off in range(0, len(ct), 16):
-        _inc_ctr(ctr)
-        ks = bytearray(ctr)
-        _aes_block(ks, rk)
-        end = min(16, len(ct) - off)
-        for i in range(end):
-            plaintext[off + i] = ct[off + i] ^ ks[i]
+        # Decrypt
+        plaintext = bytearray(len(ct))
+        ctr = bytearray(J0)
+        for off in range(0, len(ct), 16):
+            _inc_ctr(ctr)
+            ks = bytearray(ctr)
+            _aes_block(ks, rk)
+            end = min(16, len(ct) - off)
+            for i in range(end):
+                plaintext[off + i] = ct[off + i] ^ ks[i]
 
-    return bytes(plaintext)
+        return bytes(plaintext)
+    finally:
+        _wipe_buf(rk, H)
