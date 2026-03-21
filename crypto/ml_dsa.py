@@ -347,9 +347,9 @@ def _sample_rej_eta(seed, nonce):
         t0 = b & 0x0F
         t1 = b >> 4
         if t0 < 9:
-            coeffs.append((_ETA - t0) % _Q)
+            coeffs.append(_ct_sub_mod_q(_ETA, t0))
         if t1 < 9 and len(coeffs) < _N:
-            coeffs.append((_ETA - t1) % _Q)
+            coeffs.append(_ct_sub_mod_q(_ETA, t1))
     return coeffs
 
 
@@ -403,7 +403,7 @@ def _expand_mask(rho_prime, kappa):
             val = (seed_bytes[byte_idx] | (seed_bytes[byte_idx + 1] << 8) |
                    (seed_bytes[min(byte_idx + 2, len(seed_bytes) - 1)] << 16))
             val = (val >> bit_shift) & 0xFFFFF  # 20-bit mask
-            coeffs.append((_GAMMA1 - val) % _Q)
+            coeffs.append(_ct_sub_mod_q(_GAMMA1, val))
         y.append(coeffs)
     return y
 
@@ -567,14 +567,14 @@ def _pack_signed(coeffs, a, bits):
 
     Used for z (gamma1 - z_i) and r0 components.
     """
-    mapped = [(a - c) % _Q for c in coeffs]
+    mapped = [_ct_sub_mod_q(a, c) for c in coeffs]
     return _bit_pack(mapped, bits)
 
 
 def _unpack_signed(data, n, a, bits):
     """Unpack signed coefficients packed with _pack_signed."""
     raw = _bit_unpack(data, n, bits)
-    return [(a - r) % _Q for r in raw]
+    return [_ct_sub_mod_q(a, r) for r in raw]
 
 
 # ── Public Key Encoding ────────────────────────────────────────────
@@ -618,14 +618,14 @@ def _sk_encode(rho, K, tr, s1, s2, t0):
     buf.extend(tr)
     # s1: l polynomials, eta=4 -> 4 bits per coefficient (mapped: eta - c)
     for i in range(_L):
-        buf.extend(_bit_pack([(_ETA - c) % _Q for c in s1[i]], 4))
+        buf.extend(_bit_pack([_ct_sub_mod_q(_ETA, c) for c in s1[i]], 4))
     # s2: k polynomials, same encoding
     for i in range(_K):
-        buf.extend(_bit_pack([(_ETA - c) % _Q for c in s2[i]], 4))
+        buf.extend(_bit_pack([_ct_sub_mod_q(_ETA, c) for c in s2[i]], 4))
     # t0: k polynomials, 13 bits per coefficient (mapped: 2^(d-1) - c)
     half = 1 << (_D - 1)  # 4096
     for i in range(_K):
-        buf.extend(_bit_pack([(half - c) % _Q for c in t0[i]], 13))
+        buf.extend(_bit_pack([_ct_sub_mod_q(half, c) for c in t0[i]], 13))
     return bytes(buf)
 
 
@@ -641,13 +641,13 @@ def _sk_decode(sk_bytes):
     s_bytes = _N * 4 // 8  # 128 bytes per polynomial
     for _ in range(_L):
         raw = _bit_unpack(sk_bytes[offset:offset + s_bytes], _N, 4)
-        s1.append([(_ETA - r) % _Q for r in raw])
+        s1.append([_ct_sub_mod_q(_ETA, r) for r in raw])
         offset += s_bytes
     # s2: k polynomials, 4 bits each
     s2 = []
     for _ in range(_K):
         raw = _bit_unpack(sk_bytes[offset:offset + s_bytes], _N, 4)
-        s2.append([(_ETA - r) % _Q for r in raw])
+        s2.append([_ct_sub_mod_q(_ETA, r) for r in raw])
         offset += s_bytes
     # t0: k polynomials, 13 bits each
     t0 = []
@@ -655,7 +655,7 @@ def _sk_decode(sk_bytes):
     half = 1 << (_D - 1)
     for _ in range(_K):
         raw = _bit_unpack(sk_bytes[offset:offset + t0_bytes], _N, 13)
-        t0.append([(half - r) % _Q for r in raw])
+        t0.append([_ct_sub_mod_q(half, r) for r in raw])
         offset += t0_bytes
     return rho, K, tr, s1, s2, t0
 
@@ -671,7 +671,7 @@ def _sig_encode(c_tilde, z, h):
     buf = bytearray(c_tilde)
     # z: l polynomials, 20 bits each (gamma1 - z_i)
     for i in range(_L):
-        buf.extend(_bit_pack([(_GAMMA1 - c) % _Q for c in z[i]], 20))
+        buf.extend(_bit_pack([_ct_sub_mod_q(_GAMMA1, c) for c in z[i]], 20))
     # Hint encoding: omega + k bytes (Algorithm 27)
     hint_buf = bytearray(_OMEGA + _K)
     idx = 0
@@ -695,7 +695,7 @@ def _sig_decode(sig_bytes):
     z_bytes = _N * 20 // 8  # 640 bytes per polynomial
     for _ in range(_L):
         raw = _bit_unpack(sig_bytes[offset:offset + z_bytes], _N, 20)
-        z.append([(_GAMMA1 - r) % _Q for r in raw])
+        z.append([_ct_sub_mod_q(_GAMMA1, r) for r in raw])
         offset += z_bytes
 
     # Hint decoding (Algorithm 28)

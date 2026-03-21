@@ -114,6 +114,10 @@ def wipe(obj) -> bool:
         if len(obj) <= 1:
             return False
         if sys.getrefcount(obj) > _REFCOUNT_MAX:
+            import logging
+            logging.getLogger(__name__).debug(
+                "wipe(): bytes object (len=%d) has refcount %d > %d, cannot wipe safely",
+                len(obj), sys.getrefcount(obj), _REFCOUNT_MAX)
             return False
         ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
         return True
