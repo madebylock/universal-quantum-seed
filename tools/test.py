@@ -81,7 +81,9 @@ def _force_pure_python():
         "x_nacl": x._HAS_NACL,
         "x_sodium": x._HAS_SODIUM,
         "kem_sodium": kem._HAS_SODIUM,
+        "kem_pqcrypto": kem._HAS_PQCRYPTO,
         "dsa_sodium": dsa._HAS_SODIUM,
+        "dsa_pqcrypto": dsa._HAS_PQCRYPTO,
         "slh_sodium": slh._HAS_SODIUM,
         "hdsa_sodium": hdsa._HAS_SODIUM,
         "hkem_sodium": hkem._HAS_SODIUM,
@@ -91,7 +93,9 @@ def _force_pure_python():
     x._HAS_NACL = False
     x._HAS_SODIUM = False
     kem._HAS_SODIUM = False
+    kem._HAS_PQCRYPTO = False
     dsa._HAS_SODIUM = False
+    dsa._HAS_PQCRYPTO = False
     slh._HAS_SODIUM = False
     hdsa._HAS_SODIUM = False
     hkem._HAS_SODIUM = False
@@ -107,7 +111,9 @@ def _restore_backends(state):
     x._HAS_NACL = state["x_nacl"]
     x._HAS_SODIUM = state["x_sodium"]
     kem._HAS_SODIUM = state["kem_sodium"]
+    kem._HAS_PQCRYPTO = state["kem_pqcrypto"]
     dsa._HAS_SODIUM = state["dsa_sodium"]
+    dsa._HAS_PQCRYPTO = state["dsa_pqcrypto"]
     slh._HAS_SODIUM = state["slh_sodium"]
     hdsa._HAS_SODIUM = state["hdsa_sodium"]
     hkem._HAS_SODIUM = state["hkem_sodium"]
@@ -2281,6 +2287,224 @@ class TestAesGcm(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════
+# C-Accelerated Backend Tests (pqcrypto / PQClean)
+#
+# When pqcrypto IS installed, verify:
+#   - C-accelerated path produces correct results
+#   - Cross-compatibility: C-accel encaps/sign <-> pure Python decaps/verify
+#   - Pure Python fallback still works when pqcrypto is disabled
+#   - Performance: C path is significantly faster than pure Python
+# ══════════════════════════════════════════════════════════════════
+
+class TestPQCryptoAcceleration(unittest.TestCase):
+    """Test pqcrypto C-accelerated ML-KEM-768 and ML-DSA-65."""
+
+    @classmethod
+    def setUpClass(cls):
+        _, _, kem_mod, dsa_mod, *_ = _get_modules()
+        cls.kem = kem_mod
+        cls.dsa = dsa_mod
+        cls.has_pqcrypto = kem_mod._HAS_PQCRYPTO
+
+    def test_pqcrypto_detected(self):
+        """pqcrypto availability is correctly detected."""
+        try:
+            import pqcrypto  # noqa: F401
+            expected = True
+        except ImportError:
+            expected = False
+        self.assertEqual(self.has_pqcrypto, expected)
+
+    # ── ML-KEM-768 C-accelerated ────────────────────────────────
+
+    def test_kem_encaps_c_roundtrip(self):
+        """ML-KEM: C-accelerated encaps + decaps round-trip."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
+        ct, ss_enc = self.kem.ml_kem_encaps(ek)  # C path (no randomness)
+        ss_dec = self.kem.ml_kem_decaps(dk, ct)   # C path
+        self.assertEqual(ss_enc, ss_dec)
+
+    def test_kem_c_encaps_py_decaps(self):
+        """ML-KEM: C encaps -> pure Python decaps."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
+
+        # Encaps with C
+        ct, ss_enc = self.kem.ml_kem_encaps(ek)
+
+        # Decaps with pure Python
+        saved = _force_pure_python()
+        try:
+            ss_dec = self.kem.ml_kem_decaps(dk, ct)
+        finally:
+            _restore_backends(saved)
+        self.assertEqual(ss_enc, ss_dec,
+                         "C encaps / pure Python decaps shared secret mismatch")
+
+    def test_kem_py_encaps_c_decaps(self):
+        """ML-KEM: pure Python encaps -> C decaps."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
+
+        # Encaps with pure Python (explicit randomness forces fallback)
+        ct, ss_enc = self.kem.ml_kem_encaps(ek, randomness=os.urandom(32))
+
+        # Decaps with C
+        ss_dec = self.kem.ml_kem_decaps(dk, ct)
+        self.assertEqual(ss_enc, ss_dec,
+                         "Pure Python encaps / C decaps shared secret mismatch")
+
+    def test_kem_implicit_rejection_c(self):
+        """ML-KEM: C-accelerated decaps with tampered ciphertext."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
+        ct, ss = self.kem.ml_kem_encaps(ek)
+        ct_bad = bytearray(ct)
+        ct_bad[0] ^= 0xFF
+        ss_bad = self.kem.ml_kem_decaps(dk, bytes(ct_bad))
+        self.assertNotEqual(ss, ss_bad,
+                            "Tampered ciphertext should produce different shared secret")
+
+    def test_kem_c_performance(self):
+        """ML-KEM: C-accelerated encaps is significantly faster."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
+
+        # C path
+        t0 = time.perf_counter()
+        for _ in range(10):
+            self.kem.ml_kem_encaps(ek)
+        c_ms = (time.perf_counter() - t0) * 100  # avg ms
+
+        # Pure Python path
+        saved = _force_pure_python()
+        try:
+            t0 = time.perf_counter()
+            self.kem.ml_kem_encaps(ek, randomness=os.urandom(32))
+            py_ms = (time.perf_counter() - t0) * 1000
+        finally:
+            _restore_backends(saved)
+
+        self.assertLess(c_ms, py_ms,
+                        f"C path ({c_ms:.1f}ms) should be faster than "
+                        f"Python ({py_ms:.1f}ms)")
+
+    # ── ML-DSA-65 C-accelerated ─────────────────────────────────
+
+    def test_dsa_sign_verify_c(self):
+        """ML-DSA: C-accelerated sign + verify (empty ctx)."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
+        sig = self.dsa.ml_sign(b"test", sk, ctx=b"")    # C path
+        self.assertTrue(self.dsa.ml_verify(b"test", sig, pk, ctx=b""))  # C path
+        self.assertFalse(self.dsa.ml_verify(b"tampered", sig, pk, ctx=b""))
+
+    def test_dsa_c_sign_py_verify(self):
+        """ML-DSA: C sign -> pure Python verify."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
+
+        # Sign with C (empty ctx)
+        sig = self.dsa.ml_sign(b"cross-backend", sk, ctx=b"")
+
+        # Verify with pure Python
+        saved = _force_pure_python()
+        try:
+            ok = self.dsa.ml_verify(b"cross-backend", sig, pk, ctx=b"")
+        finally:
+            _restore_backends(saved)
+        self.assertTrue(ok, "C sign / pure Python verify failed")
+
+    def test_dsa_py_sign_c_verify(self):
+        """ML-DSA: pure Python sign -> C verify."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
+
+        # Sign with pure Python (deterministic forces fallback)
+        sig = self.dsa.ml_sign(b"cross-backend", sk, ctx=b"",
+                               deterministic=True)
+
+        # Verify with C
+        ok = self.dsa.ml_verify(b"cross-backend", sig, pk, ctx=b"")
+        self.assertTrue(ok, "Pure Python sign / C verify failed")
+
+    def test_dsa_nonempty_ctx_fallback(self):
+        """ML-DSA: non-empty context falls back to pure Python."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
+        sig = self.dsa.ml_sign(b"ctx-test", sk, ctx=b"my-context")
+        self.assertTrue(self.dsa.ml_verify(b"ctx-test", sig, pk,
+                                           ctx=b"my-context"))
+        # Wrong context must fail
+        self.assertFalse(self.dsa.ml_verify(b"ctx-test", sig, pk,
+                                            ctx=b"wrong"))
+
+    def test_dsa_c_performance(self):
+        """ML-DSA: C-accelerated verify is significantly faster."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
+        sig = self.dsa.ml_sign(b"perf", sk, ctx=b"")
+
+        # C verify
+        t0 = time.perf_counter()
+        for _ in range(10):
+            self.dsa.ml_verify(b"perf", sig, pk, ctx=b"")
+        c_ms = (time.perf_counter() - t0) * 100  # avg ms
+
+        # Pure Python verify
+        saved = _force_pure_python()
+        try:
+            t0 = time.perf_counter()
+            self.dsa.ml_verify(b"perf", sig, pk, ctx=b"")
+            py_ms = (time.perf_counter() - t0) * 1000
+        finally:
+            _restore_backends(saved)
+
+        self.assertLess(c_ms, py_ms,
+                        f"C verify ({c_ms:.1f}ms) should be faster than "
+                        f"Python ({py_ms:.1f}ms)")
+
+    # ── Hybrid layers with C acceleration ───────────────────────
+
+    def test_hybrid_kem_c_roundtrip(self):
+        """Hybrid KEM: round-trip with C-accelerated ML-KEM component."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        from crypto.hybrid_kem import (
+            hybrid_kem_keygen, hybrid_kem_encaps, hybrid_kem_decaps,
+        )
+        ek, dk = hybrid_kem_keygen(os.urandom(96))
+        ct, ss_enc = hybrid_kem_encaps(ek)
+        ss_dec = hybrid_kem_decaps(dk, ct)
+        self.assertEqual(ss_enc, ss_dec)
+
+    def test_hybrid_dsa_c_roundtrip(self):
+        """Hybrid DSA: round-trip with context (ML-DSA uses Python fallback)."""
+        if not self.has_pqcrypto:
+            self.skipTest("pqcrypto not installed")
+        from crypto.hybrid_dsa import (
+            hybrid_dsa_keygen, hybrid_dsa_sign, hybrid_dsa_verify,
+        )
+        sk, pk = hybrid_dsa_keygen(os.urandom(64))
+        sig = hybrid_dsa_sign(b"hybrid-c-test", sk, ctx=b"test-ctx")
+        self.assertTrue(hybrid_dsa_verify(b"hybrid-c-test", sig, pk,
+                                          ctx=b"test-ctx"))
+        self.assertFalse(hybrid_dsa_verify(b"tampered", sig, pk,
+                                           ctx=b"test-ctx"))
+
+
+# ══════════════════════════════════════════════════════════════════
 # Runner
 # ══════════════════════════════════════════════════════════════════
 
@@ -2292,8 +2516,10 @@ if __name__ == "__main__":
     print("=" * 68)
     print("Universal Quantum Seed — Comprehensive Crypto Test Suite")
     print("=" * 68)
+    import crypto.ml_dsa as _dsa
     print(f"  pynacl (libsodium):  {'available' if _ed._HAS_NACL else 'NOT installed (pure Python only)'}")
     print(f"  libsodium memops:    {'available' if _kem._HAS_SODIUM else 'NOT installed (fallback zeroing)'}")
+    print(f"  pqcrypto (PQClean):  {'available' if _kem._HAS_PQCRYPTO else 'NOT installed (pure Python fallback)'}")
     print(f"  argon2-cffi:         {'available' if _argon2._HAS_CFFI else 'NOT installed (pure Python fallback)'}")
     print("=" * 68)
 

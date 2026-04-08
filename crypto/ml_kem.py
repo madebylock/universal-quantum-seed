@@ -55,6 +55,19 @@ import hashlib
 import hmac
 import os
 
+# ── C-accelerated backend (pqcrypto / PQClean) ──────────────────
+# When available, encaps/decaps delegate to C for ~100x speedup.
+# Keygen still uses pure Python (deterministic seed support).
+_HAS_PQCRYPTO = False
+try:
+    from pqcrypto.kem.ml_kem_768 import (
+        encrypt as _c_kem_encaps,
+        decrypt as _c_kem_decaps,
+    )
+    _HAS_PQCRYPTO = True
+except ImportError:
+    pass
+
 # libsodium (via PyNaCl) for secure memory operations.
 # Optional: gracefully degrades when PyNaCl is not installed.
 try:
@@ -697,6 +710,13 @@ def ml_kem_encaps(ek, randomness=None):
     if not _ek_modulus_check(ek):
         raise ValueError("Encapsulation key failed FIPS 203 modulus check (§7.1)")
 
+    # C-accelerated path: ~100x faster than pure Python NTT.
+    # Only used when caller does not supply explicit randomness
+    # (pqcrypto generates its own internally).
+    if _HAS_PQCRYPTO and randomness is None:
+        ct, ss = _c_kem_encaps(bytes(ek))
+        return ct, ss
+
     if randomness is None:
         randomness = os.urandom(32)
     if len(randomness) != 32:
@@ -743,6 +763,10 @@ def ml_kem_decaps(dk, ct):
         raise ValueError(f"ML-KEM-768 decaps requires 1088-byte CT, got {len(ct)}")
     if not _dk_hash_check(dk):
         raise ValueError("Decapsulation key failed FIPS 203 hash check (§7.2)")
+
+    # C-accelerated path: ~100x faster than pure Python NTT.
+    if _HAS_PQCRYPTO:
+        return _c_kem_decaps(bytes(dk), bytes(ct))
 
     # Parse DK = dk_pke || ek_pke || h || z
     # Secret components use bytearray so they can be securely wiped.

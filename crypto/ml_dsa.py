@@ -38,6 +38,21 @@ import hmac
 import os
 import struct
 
+# ── C-accelerated backend (pqcrypto / PQClean) ──────────────────
+# When available, sign/verify delegate to C for ~100x speedup.
+# Only used when context is empty (pqcrypto uses FIPS 204 pure mode
+# with empty context; non-empty context requires pure Python).
+# Keygen still uses pure Python (deterministic seed support).
+_HAS_PQCRYPTO = False
+try:
+    from pqcrypto.sign.ml_dsa_65 import (
+        sign as _c_dsa_sign,
+        verify as _c_dsa_verify,
+    )
+    _HAS_PQCRYPTO = True
+except ImportError:
+    pass
+
 # ── Secure memory utilities (libsodium-backed) ────────────────
 _HAS_SODIUM = False
 try:
@@ -1061,6 +1076,19 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
     """
     if len(ctx) > 255:
         raise ValueError(f"context string must be <= 255 bytes, got {len(ctx)}")
+
+    # C-accelerated path: ~100x faster than pure Python NTT.
+    # pqcrypto uses FIPS 204 pure mode with empty context, so we can
+    # only accelerate when ctx is empty and no explicit randomness is
+    # requested (pqcrypto uses hedged signing internally).
+    if (_HAS_PQCRYPTO and ctx == b""
+            and rnd is None and not deterministic):
+        sig = _c_dsa_sign(bytes(sk_bytes), bytes(message))
+        # Verify-after-sign (fault injection countermeasure)
+        if not _c_dsa_verify(_pk_from_sk(sk_bytes), bytes(message), sig):
+            raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
+        return sig
+
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
     sig = _ml_sign_internal(m_prime, sk_bytes, rnd=rnd, deterministic=deterministic)
 
@@ -1091,5 +1119,14 @@ def ml_verify(message, sig_bytes, pk_bytes, ctx=b""):
     """
     if len(ctx) > 255:
         return False
+
+    # C-accelerated path when context is empty.
+    if _HAS_PQCRYPTO and ctx == b"":
+        try:
+            return _c_dsa_verify(
+                bytes(pk_bytes), bytes(message), bytes(sig_bytes))
+        except (ValueError, TypeError):
+            return False
+
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
     return _ml_verify_internal(m_prime, sig_bytes, pk_bytes)
