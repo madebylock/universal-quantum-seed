@@ -6,6 +6,32 @@ Drop-in package: copy or symlink this folder as `modules/seed/` in lock
 and all existing imports work unchanged.
 """
 
+import hashlib
+from pathlib import Path
+
+
+def _canonical_wordlist_bytes(data: bytes) -> bytes:
+    # Git stores this generated Python wordlist as LF text, while some Windows
+    # checkouts expand it to CRLF. Hash the canonical repository form.
+    return data.replace(b"\r\n", b"\n")
+
+
+def _verify_wordlist_integrity():
+    here = Path(__file__).resolve().parent
+    words_path = here / "words.py"
+    digest_path = here / "words.py.sha256"
+    expected_line = digest_path.read_text(encoding="utf-8").strip()
+    expected = expected_line.split()[0].lower()
+    actual = hashlib.sha256(
+        _canonical_wordlist_bytes(words_path.read_bytes())
+    ).hexdigest()
+    if actual.lower() != expected:
+        raise ImportError(
+            "UQS wordlist integrity check failed: words.py hash mismatch")
+
+
+_verify_wordlist_integrity()
+
 try:
     from .seed import (
         generate_words,

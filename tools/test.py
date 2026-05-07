@@ -1437,6 +1437,36 @@ class TestQuantumSeed(unittest.TestCase):
         self.assertEqual(len(s), 32)
 
 
+class TestWordlistIntegrity(unittest.TestCase):
+    """Wordlist integrity hash behavior."""
+
+    def test_canonical_hash_ignores_crlf_checkout(self):
+        import importlib.util
+
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        spec = importlib.util.spec_from_file_location(
+            "uqs_integrity_under_test",
+            os.path.join(root, "__init__.py"),
+            submodule_search_locations=[root],
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+            data = b"alpha\r\nbeta\r\n"
+            self.assertEqual(
+                hashlib.sha256(
+                    module._canonical_wordlist_bytes(data)
+                ).hexdigest(),
+                hashlib.sha256(b"alpha\nbeta\n").hexdigest(),
+            )
+        finally:
+            sys.modules.pop(spec.name, None)
+
+
 # ══════════════════════════════════════════════════════════════════
 # Pure Python Fallback Tests
 #
