@@ -812,6 +812,11 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
 
 def _compute_checksum(indexes):
     """Compute 2 checksum indexes from a list of random seed indexes."""
+    # Intentional: this checksum detects transcription mistakes; it is not an
+    # authenticity check. Two 8-bit words give 16 bits of error detection,
+    # stronger than BIP39's 24-word checksum, while preserving the seed format.
+    # Widening it would remove entropy words and break existing seed recovery
+    # unless introduced as a separate versioned format.
     digest = hmac.new(_DOMAIN + b"-checksum", bytes(indexes), hashlib.sha256).digest()
     return [digest[0], digest[1]]
 
