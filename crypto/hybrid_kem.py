@@ -29,7 +29,15 @@ import hmac
 import os
 
 from .x25519 import x25519_keygen, x25519, x25519_pk_from_sk, _x25519_raw_bytes
-from .ml_kem import ml_kem_keygen, ml_kem_encaps, ml_kem_decaps
+from .ml_kem import (
+    ML_KEM_CT_SIZE,
+    ML_KEM_DK_SIZE,
+    ML_KEM_EK_SIZE,
+    ml_kem_decaps,
+    ml_kem_ek_from_dk,
+    ml_kem_encaps,
+    ml_kem_keygen,
+)
 
 # ── Secure memory utilities (libsodium-backed) ────────────────
 _HAS_SODIUM = False
@@ -68,9 +76,9 @@ def _munlock(buf):
 # Component sizes
 _X25519_SK = 32
 _X25519_PK = 32
-_ML_KEM_EK = 1184
-_ML_KEM_DK = 2400
-_ML_KEM_CT = 1088
+_ML_KEM_EK = ML_KEM_EK_SIZE
+_ML_KEM_DK = ML_KEM_DK_SIZE
+_ML_KEM_CT = ML_KEM_CT_SIZE
 
 # Hybrid sizes (exported for external validation)
 HYBRID_KEM_EK_SIZE = _X25519_PK + _ML_KEM_EK    # 1,216
@@ -259,7 +267,7 @@ def hybrid_kem_decaps(dk, ct):
         ml_ct = ct[_X25519_PK:]
 
         # Recover receiver public keys from dk for HKDF binding.
-        ml_ek = ml_dk[384*3:384*3+_ML_KEM_EK]
+        ml_ek = ml_kem_ek_from_dk(ml_dk)
         x_pk = x25519_pk_from_sk(x_sk)
 
         # X25519 shared secret recovery (implicit rejection on failure)

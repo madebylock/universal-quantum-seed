@@ -33,7 +33,10 @@ from .x25519 import (
 # Post-quantum
 from .ml_dsa import ml_keygen, ml_sign, ml_verify
 from .slh_dsa import slh_keygen, slh_sign, slh_verify
-from .ml_kem import ml_kem_keygen, ml_kem_encaps, ml_kem_decaps
+from .ml_kem import (
+    ML_KEM_CT_SIZE, ML_KEM_DK_SIZE, ML_KEM_EK_SIZE,
+    ml_kem_keygen, ml_kem_encaps, ml_kem_decaps, ml_kem_ek_from_dk,
+)
 
 # Hybrid
 from .hybrid_dsa import hybrid_dsa_keygen, hybrid_dsa_sign, hybrid_dsa_verify
@@ -57,7 +60,8 @@ __all__ = [
     # Post-quantum
     "ml_keygen", "ml_sign", "ml_verify",
     "slh_keygen", "slh_sign", "slh_verify",
-    "ml_kem_keygen", "ml_kem_encaps", "ml_kem_decaps",
+    "ml_kem_keygen", "ml_kem_encaps", "ml_kem_decaps", "ml_kem_ek_from_dk",
+    "ML_KEM_EK_SIZE", "ML_KEM_DK_SIZE", "ML_KEM_CT_SIZE",
     # Hybrid
     "hybrid_dsa_keygen", "hybrid_dsa_sign", "hybrid_dsa_verify",
     "hybrid_kem_keygen", "hybrid_kem_encaps", "hybrid_kem_decaps",

@@ -86,6 +86,11 @@ _ETA2 = 2              # CBD parameter for encryption noise
 _DU = 10               # Compression bits for u (ciphertext)
 _DV = 4                # Compression bits for v (ciphertext)
 
+ML_KEM_EK_SIZE = 1184
+ML_KEM_DK_SIZE = 2400
+ML_KEM_CT_SIZE = 1088
+_K_PKE_DK_SIZE = 384 * _K
+
 
 # ── NTT Constants ────────────────────────────────────────────────
 
@@ -632,9 +637,9 @@ def _ek_modulus_check(ek: bytes) -> bool:
     Verifies every 12-bit coefficient in t_hat encodes a value in [0, q-1]
     by decoding and re-encoding each polynomial and comparing to the original.
     """
-    if len(ek) != 1184:
+    if len(ek) != ML_KEM_EK_SIZE:
         return False
-    t_part = ek[:384 * _K]
+    t_part = ek[:_K_PKE_DK_SIZE]
     canonical = b"".join(
         _byte_encode(_byte_decode(t_part[384 * i:384 * (i + 1)], 12), 12)
         for i in range(_K)
@@ -647,11 +652,25 @@ def _dk_hash_check(dk: bytes) -> bool:
 
     Verifies H(ek) stored inside dk matches a fresh hash of the embedded ek.
     """
-    if len(dk) != 2400:
+    if len(dk) != ML_KEM_DK_SIZE:
         return False
-    ek = dk[384 * _K:384 * _K + 1184]
-    h_stored = dk[384 * _K + 1184:384 * _K + 1184 + 32]
+    ek = dk[_K_PKE_DK_SIZE:_K_PKE_DK_SIZE + ML_KEM_EK_SIZE]
+    h_stored = dk[
+        _K_PKE_DK_SIZE + ML_KEM_EK_SIZE:
+        _K_PKE_DK_SIZE + ML_KEM_EK_SIZE + 32
+    ]
     return hmac.compare_digest(_sha3_256(ek), h_stored)
+
+
+def ml_kem_ek_from_dk(dk: bytes) -> bytes:
+    """Return the ML-KEM encapsulation key embedded in a valid decapsulation key.
+
+    FIPS 203 stores ``dk = dk_pke || ek_pke || H(ek_pke) || z``. Keep that
+    layout centralized here so hybrid callers do not duplicate offsets.
+    """
+    if not _dk_hash_check(dk):
+        raise ValueError("Decapsulation key failed FIPS 203 hash check (§7.2)")
+    return bytes(dk[_K_PKE_DK_SIZE:_K_PKE_DK_SIZE + ML_KEM_EK_SIZE])
 
 
 # ── Public API ───────────────────────────────────────────────────
@@ -683,10 +702,14 @@ def ml_kem_keygen(seed=None):
     h_ek = _sha3_256(ek_pke)
     dk = dk_pke + ek_pke + h_ek + z
 
-    if len(ek_pke) != 1184:
-        raise RuntimeError(f"ML-KEM-768 EK must be 1184 bytes, got {len(ek_pke)}")
-    if len(dk) != 2400:
-        raise RuntimeError(f"ML-KEM-768 DK must be 2400 bytes, got {len(dk)}")
+    if len(ek_pke) != ML_KEM_EK_SIZE:
+        raise RuntimeError(
+            f"ML-KEM-768 EK must be {ML_KEM_EK_SIZE} bytes, got {len(ek_pke)}"
+        )
+    if len(dk) != ML_KEM_DK_SIZE:
+        raise RuntimeError(
+            f"ML-KEM-768 DK must be {ML_KEM_DK_SIZE} bytes, got {len(dk)}"
+        )
 
     return ek_pke, dk
 
@@ -732,8 +755,10 @@ def ml_kem_encaps(ek, randomness=None):
 
     ct = _k_pke_encrypt(ek, m, r)
 
-    if len(ct) != 1088:
-        raise RuntimeError(f"ML-KEM-768 ciphertext must be 1088 bytes, got {len(ct)}")
+    if len(ct) != ML_KEM_CT_SIZE:
+        raise RuntimeError(
+            f"ML-KEM-768 ciphertext must be {ML_KEM_CT_SIZE} bytes, got {len(ct)}"
+        )
 
     return ct, K
 
@@ -759,8 +784,10 @@ def ml_kem_decaps(dk, ct):
     Raises:
         ValueError: If ct or dk fails FIPS 203 input checks.
     """
-    if len(ct) != 1088:
-        raise ValueError(f"ML-KEM-768 decaps requires 1088-byte CT, got {len(ct)}")
+    if len(ct) != ML_KEM_CT_SIZE:
+        raise ValueError(
+            f"ML-KEM-768 decaps requires {ML_KEM_CT_SIZE}-byte CT, got {len(ct)}"
+        )
     if not _dk_hash_check(dk):
         raise ValueError("Decapsulation key failed FIPS 203 hash check (§7.2)")
 
@@ -770,10 +797,13 @@ def ml_kem_decaps(dk, ct):
 
     # Parse DK = dk_pke || ek_pke || h || z
     # Secret components use bytearray so they can be securely wiped.
-    dk_pke = bytearray(dk[:384*_K])           # 1152 bytes — SECRET
-    ek_pke = dk[384*_K:384*_K+1184]           # 1184 bytes — public
-    h = dk[384*_K+1184:384*_K+1184+32]        # 32 bytes   — public hash
-    z = bytearray(dk[384*_K+1184+32:])        # 32 bytes   — SECRET
+    dk_pke = bytearray(dk[:_K_PKE_DK_SIZE])   # 1152 bytes — SECRET
+    ek_pke = ml_kem_ek_from_dk(dk)            # 1184 bytes — public
+    h = dk[
+        _K_PKE_DK_SIZE + ML_KEM_EK_SIZE:
+        _K_PKE_DK_SIZE + ML_KEM_EK_SIZE + 32
+    ]                                        # 32 bytes   — public hash
+    z = bytearray(dk[_K_PKE_DK_SIZE + ML_KEM_EK_SIZE + 32:])  # SECRET
 
     # Lock secret pages to prevent swapping to disk.
     _mlock(dk_pke)

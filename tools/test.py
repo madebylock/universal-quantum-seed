@@ -25,6 +25,7 @@ Run from the universal-quantum-seed root:
 """
 
 import hashlib
+import inspect
 import importlib
 import os
 import random
@@ -1124,6 +1125,17 @@ class TestMLKEMInputValidation(unittest.TestCase):
         with self.assertRaises(ValueError):
             ml_kem_encaps(b"\xff" * 1184)
 
+    def test_ek_from_dk_uses_checked_layout(self):
+        from crypto.ml_kem import ml_kem_ek_from_dk, ml_kem_keygen
+        ek, dk = ml_kem_keygen(_KAT_KEYGEN_SEED)
+        self.assertEqual(ml_kem_ek_from_dk(dk), ek)
+
+        bad_dk = bytearray(dk)
+        ek_offset = len(dk) - len(ek) - 64  # H(ek) || z are the trailing fields.
+        bad_dk[ek_offset] ^= 0x01
+        with self.assertRaises(ValueError):
+            ml_kem_ek_from_dk(bytes(bad_dk))
+
 
 # ══════════════════════════════════════════════════════════════════
 # SLH-DSA-SHAKE-128s Tests
@@ -1348,6 +1360,14 @@ class TestHybridKEM(unittest.TestCase):
         ek2, dk2 = self.keygen(seed)
         self.assertEqual(ek1, ek2)
         self.assertEqual(dk1, dk2)
+
+    def test_decaps_uses_checked_ml_kem_key_parser(self):
+        import crypto.hybrid_kem as hybrid_kem
+
+        source = inspect.getsource(hybrid_kem.hybrid_kem_decaps)
+        self.assertIn("ml_kem_ek_from_dk", source)
+        self.assertNotIn("384*3", source)
+        self.assertNotIn("384 * 3", source)
 
 
 # ══════════════════════════════════════════════════════════════════
