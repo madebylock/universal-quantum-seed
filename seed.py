@@ -6,7 +6,10 @@ __version__ = "1.0"
 
 Generates cryptographically secure seeds using 256 visual icons (8 bits each).
 - 24 words = 22 random + 2 checksum = 176 bits of entropy
+  (accepted for recovery/classical compatibility, not recommended for new
+  long-term seeds)
 - 36 words = 34 random + 2 checksum = 272 bits of entropy
+  (recommended default and required for post-quantum derivation)
 
 The last 2 words of every seed are a 16-bit checksum (HMAC-SHA-256 based)
 that detects transcription errors with 1-in-65,536 false-positive rate.
@@ -766,8 +769,8 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     attempts. Only after validation passes is the actual seed generated.
 
     Args:
-        word_count: 24 (176-bit, 22 random + 2 checksum) or
-                    36 (272-bit, 34 random + 2 checksum).
+        word_count: 24 (176-bit, 22 random + 2 checksum; compatibility) or
+                    36 (272-bit, 34 random + 2 checksum; recommended).
         extra_entropy: Optional bytes to mix in (e.g. from mouse_entropy.digest()).
         language: Optional language code (e.g. "french", "arabic").
                   None or "english" returns English words.
