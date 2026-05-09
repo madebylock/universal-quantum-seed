@@ -993,12 +993,20 @@ def get_profile(master_key, profile_password):
 
     Args:
         master_key: 64-byte master seed from get_seed().
-        profile_password: Profile password string. Empty string returns
-            master_key unchanged (default profile).
+        profile_password: Profile password string. Empty/missing returns
+            master_key unchanged — this IS the default profile.
 
     Returns:
         64 bytes of profile-specific key material.
     """
+    # ── DO NOT CHANGE — CANONICAL BEHAVIOR (locked by KAT v1) ──
+    # Empty profile_password MUST return master_key unchanged.
+    # This is the spec for the "default profile" across all UQS
+    # implementations (this Python, signer's vendored Python,
+    # universal-quantum-seed-js). The KAT vectors at kat/seed_v1.json
+    # in the JS repo encode this: for every vector, `default_profile_hex`
+    # == `master_seed_hex`. If you "fix" this to always derive, you will
+    # break cross-platform key compatibility AND every KAT will fail.
     if not profile_password:
         return master_key
     # NFKC normalization prevents cross-platform derivation differences

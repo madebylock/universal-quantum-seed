@@ -247,7 +247,11 @@ def _x25519_raw_bytes(sk, pk):
         try:
             return nacl.bindings.crypto_scalarmult(sk, pk)
         except Exception:
-            return _ZERO_32
+            # Fall through to the pure-Python path on libsodium error.
+            # Returning _ZERO_32 here would be wrong: RFC 7748 zeros are a
+            # valid low-order result, so substituting them on a library
+            # exception silently masks bugs and looks like a successful DH.
+            pass
     return _encode_u(_x25519_raw(sk, pk))
 
 
@@ -256,8 +260,9 @@ def _x25519_raw_bytes_into(sk, pk, out):
     if _HAS_NACL:
         try:
             out[:] = nacl.bindings.crypto_scalarmult(sk, pk)
+            return out
         except Exception:
-            out[:] = _ZERO_32
-        return out
+            # Fall through to pure-Python on libsodium error (see above).
+            pass
     out[:] = _encode_u(_x25519_raw(sk, pk))
     return out

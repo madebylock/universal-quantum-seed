@@ -127,6 +127,12 @@ def _to_affine(P):
     Z is always non-zero for valid curve points. No branch on Z.
     """
     X, Y, Z, T = P
+    if Z == 0:
+        # Point at infinity in extended coordinates. Reaching this from a
+        # valid scalar mult or decoded point means an invariant has been
+        # violated upstream — fail loud rather than return garbage from
+        # _modinv(0) (which silently yields (0, 0) under Fermat's inverse).
+        raise ValueError("invalid extended point with Z=0")
     z_inv = _modinv(Z)
     return ((X * z_inv) % _P, (Y * z_inv) % _P)
 
