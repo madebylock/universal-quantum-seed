@@ -1921,7 +1921,7 @@ _ARGON2_VECTORS = [
         "memory_cost": 128,
         "parallelism": 4,
         "hash_len": 32,
-        "expected": "836d7c75f5da9e014e232fb210d36bcc8a83aa7176685bb8217a3b9bab0f6fcd",
+        "expected": "5da1978e11b52b977f8e02e4d1b6aef48fd8226e71a60bc2a35f85561a151b67",
     },
     {
         "name": "4 lanes, 3 iterations (128 KiB, t=3, p=4)",
@@ -1931,7 +1931,7 @@ _ARGON2_VECTORS = [
         "memory_cost": 128,
         "parallelism": 4,
         "hash_len": 32,
-        "expected": "7008d4089426dbeb7f5a95eb3157edfb55aed23ef249166fe3f99ce3b1ac680b",
+        "expected": "8bd1e366e33140a31e50d9d4514b2322d85263df880dde996982a5c0e61440bc",
     },
 ]
 

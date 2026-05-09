@@ -48,6 +48,17 @@ try:
 except ImportError:
     pass
 
+# Pure-stdlib ctypes fallback for fast zeroing when PyNaCl is unavailable.
+# Single libc memset call — much faster than a Python loop on large buffers
+# (Argon2 state, polynomials). Skipped on implementations without ctypes
+# (e.g., MicroPython), which fall through to the Python loop below.
+_HAS_CTYPES = False
+try:
+    import ctypes as _ctypes
+    _HAS_CTYPES = True
+except ImportError:
+    pass
+
 
 def _secure_zero(buf):
     """Securely wipe a mutable buffer (bytearray / memoryview)."""
@@ -58,6 +69,8 @@ def _secure_zero(buf):
         return
     if _HAS_SODIUM:
         _lib.sodium_memzero(_ffi.from_buffer(buf), n)
+    elif _HAS_CTYPES:
+        _ctypes.memset(_ctypes.addressof(_ctypes.c_char.from_buffer(buf)), 0, n)
     else:
         for i in range(n):
             buf[i] = 0

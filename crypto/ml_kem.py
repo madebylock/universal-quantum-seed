@@ -76,6 +76,16 @@ try:
 except ImportError:
     _HAS_SODIUM = False
 
+# Pure-stdlib ctypes fallback for fast zeroing when PyNaCl is unavailable.
+# Single libc memset call — much faster than a Python loop on large buffers
+# (Argon2 state, polynomials). Skipped on implementations without ctypes
+# (e.g., MicroPython), which fall through to the Python loop below.
+try:
+    import ctypes as _ctypes
+    _HAS_CTYPES = True
+except ImportError:
+    _HAS_CTYPES = False
+
 # ── ML-KEM-768 Parameters (FIPS 203 Table 2) ────────────────────
 
 _Q = 3329              # Prime modulus
@@ -168,6 +178,8 @@ def _secure_zero(buf):
     if _HAS_SODIUM:
         c_buf = _ffi.from_buffer(buf)
         _lib.sodium_memzero(c_buf, n)
+    elif _HAS_CTYPES:
+        _ctypes.memset(_ctypes.addressof(_ctypes.c_char.from_buffer(buf)), 0, n)
     else:
         for i in range(n):
             buf[i] = 0
