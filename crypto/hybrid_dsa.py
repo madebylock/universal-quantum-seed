@@ -12,14 +12,13 @@ ML-DSA-65 provides post-quantum security (NIST Level 3, ~192-bit).
 Stripping resistance: BOTH component signatures are domain-separated so
 neither can be extracted and used as a valid standalone signature:
     - Ed25519 signs: b"hybrid-dsa-v1" || len(ctx) || ctx || message
-    - ML-DSA uses ctx: b"hybrid-dsa-v1" || 0x00 || ctx (within FIPS 204
-      pure-mode formatting, which prepends 0x00 || len(ctx) internally)
+    - ML-DSA signs the same domain-prefixed message with empty FIPS context,
+      allowing the pqcrypto backend while preserving stripping resistance.
 
 This means ML-DSA signatures produced by the hybrid scheme are NOT valid
 standalone ML-DSA-65 signatures on the same (ctx, message) pair.
 
-Context strings are limited to 241 bytes (255 minus 14 bytes of domain
-separation overhead for the ML-DSA component).
+Context strings are limited to 255 bytes.
 
 Sizes:
     Secret key:  4,096 bytes  (Ed25519 sk 64B + ML-DSA-65 sk 4,032B)
@@ -111,19 +110,25 @@ def _ed25519_message(message, ctx):
 
 
 def _ml_dsa_ctx(ctx):
-    """Build domain-separated context for the ML-DSA component.
+    """Legacy ML-DSA context (kept for backward verification).
 
-    Format: b"hybrid-dsa-v1" + 0x00 + ctx
-
-    This ensures the ML-DSA signature cannot be stripped from the hybrid and
-    presented as a valid standalone ML-DSA-65 signature. The 0x00 separator
-    prevents ambiguity between prefix and caller-supplied context bytes.
-
-    Combined with FIPS 204's internal formatting (0x00 || len(ctx) || ctx ||
-    message), this preserves standard ML-DSA message structure while making
-    the signature non-portable outside the hybrid context.
+    Format: b"hybrid-dsa-v1" + 0x00 + ctx — used by the previous hybrid
+    signing scheme that pushed domain separation into FIPS 204's ctx field.
+    Retained so ``hybrid_dsa_verify`` still accepts signatures produced by
+    older clients.
     """
     return _DOMAIN + b"\x00" + ctx
+
+
+def _ml_dsa_message(message, ctx):
+    """Build the domain-bound message for the ML-DSA component.
+
+    Current signatures use empty FIPS context so pqcrypto can sign the
+    component.  The domain and caller context are still bound into the signed
+    bytes, so the ML-DSA signature remains non-portable outside the hybrid
+    scheme.  ``_ml_dsa_ctx`` is retained for legacy verification.
+    """
+    return _DOMAIN + len(ctx).to_bytes(1, "big") + ctx + message
 
 
 def hybrid_dsa_keygen(seed):
@@ -175,10 +180,9 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
             f"Hybrid DSA sk must be {HYBRID_DSA_SK_SIZE} bytes, got {len(sk_bytes)}"
         )
 
-    ml_ctx = _ml_dsa_ctx(ctx)
-    if len(ml_ctx) > 255:
+    if len(ctx) > 255:
         raise ValueError(
-            f"Context string must be 0-241 bytes for hybrid DSA, got {len(ctx)}"
+            f"Context string must be 0-255 bytes for hybrid DSA, got {len(ctx)}"
         )
 
     # Copy secret keys into mutable buffers for secure wiping
@@ -191,8 +195,9 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
         # Ed25519 signs domain-prefixed message (stripping resistance)
         ed_sig = ed25519_sign(_ed25519_message(message, ctx), bytes(ed_sk_buf))
 
-        # ML-DSA signs raw message with domain-separated context
-        ml_sig = ml_sign(message, bytes(ml_sk_buf), ctx=ml_ctx)
+        # ML-DSA signs a domain-prefixed message with empty FIPS context so
+        # pqcrypto can provide the production signing backend.
+        ml_sig = ml_sign(_ml_dsa_message(message, ctx), bytes(ml_sk_buf), ctx=b"")
 
         sig = ed_sig + ml_sig
 
@@ -233,8 +238,7 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
     if len(pk_bytes) != HYBRID_DSA_PK_SIZE:
         return False
 
-    ml_ctx = _ml_dsa_ctx(ctx)
-    if len(ml_ctx) > 255:
+    if len(ctx) > 255:
         return False
 
     ed_sig = sig_bytes[:_ED25519_SIG]
@@ -244,5 +248,9 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
 
     # Both must verify — always evaluate both (no short-circuit on first failure)
     ed_ok = ed25519_verify(_ed25519_message(message, ctx), ed_sig, ed_pk)
-    ml_ok = ml_verify(message, ml_sig, ml_pk, ctx=ml_ctx)
+    ml_ok = ml_verify(_ml_dsa_message(message, ctx), ml_sig, ml_pk, ctx=b"")
+    if not ml_ok:
+        legacy_ctx = _ml_dsa_ctx(ctx)
+        if len(legacy_ctx) <= 255:
+            ml_ok = ml_verify(message, ml_sig, ml_pk, ctx=legacy_ctx)
     return ed_ok and ml_ok

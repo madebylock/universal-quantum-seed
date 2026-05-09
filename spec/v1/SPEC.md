@@ -157,7 +157,7 @@ passphrase_bytes = unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 
 ---
 
-## 6. Key Derivation Pipeline (6 layers)
+## 6. Key Derivation Pipeline (5 layers)
 
 ### 6.0 Checksum Verification & Stripping
 
@@ -168,28 +168,40 @@ Before any KDF computation:
 
 If verification fails, key derivation MUST be rejected with an error.
 
-### 6.1 Positional Binding
+### 6.1 Length-Prefixed Payload
 
-Each data icon index is packed with its zero-based position as a little-endian (pos, index) byte pair:
+The KDF input is a versioned, domain-separated payload with explicit length
+prefixes on every variable-length field. This makes the boundary between the
+index region and the passphrase unambiguous and prevents collisions between
+different (words, passphrase) inputs that would otherwise serialize to the
+same byte stream.
 
 ```python
-payload = b""
+def _passphrase_to_bytes(passphrase):
+    if not passphrase:
+        return b""
+    return unicodedata.normalize("NFKC", passphrase).encode("utf-8")
+
+passphrase_bytes = _passphrase_to_bytes(passphrase)
+payload  = b"universal-seed-v1-seed-payload-v1"   # domain + version
+payload += struct.pack("<H", len(data_indexes))   # uint16 LE word count
 for pos, idx in enumerate(data_indexes):
-    payload += struct.pack("<BB", pos, idx)
+    payload += struct.pack("<BB", pos, idx)       # (pos, idx) bytes
+payload += b"\x01passphrase"                       # field tag
+payload += struct.pack("<I", len(passphrase_bytes))  # uint32 LE pp length
+payload += passphrase_bytes
 ```
 
-This binds each icon to its slot, preventing reordering attacks.
+Each (pos, idx) pair binds an icon to its slot (preventing reordering). The
+domain prefix, word-count prefix, field tag, and passphrase length prefix
+together ensure that no two distinct (indexes, passphrase) inputs share a
+payload — including across the 24-word and 36-word formats.
 
-### 6.2 Passphrase Mixing
+NFKC normalization of the passphrase prevents cross-platform fund loss from
+different Unicode representations of the same visual characters (macOS NFD
+vs Windows NFC).
 
-If a passphrase is provided, its raw UTF-8 bytes are appended:
-
-```python
-if passphrase:
-    payload += passphrase.encode("utf-8")
-```
-
-### 6.3 HKDF-Extract (RFC 5869)
+### 6.2 HKDF-Extract (RFC 5869)
 
 The payload is collapsed into a pseudorandom key (PRK) using HMAC-SHA512:
 
@@ -198,10 +210,10 @@ prk = HMAC-SHA512(key=b"universal-seed-v1", message=payload)
 ```
 
 - Key: domain separator `b"universal-seed-v1"` (17 bytes)
-- Message: positional payload + optional passphrase bytes
+- Message: length-prefixed payload from §6.1
 - Output: 64 bytes (512 bits)
 
-### 6.4 Chained KDF Stretching
+### 6.3 Chained KDF Stretching
 
 The PRK is hardened through two KDFs in series:
 
@@ -224,7 +236,7 @@ hash_len    = 64 bytes
 type        = Argon2id
 ```
 
-### 6.5 HKDF-Expand (RFC 5869)
+### 6.4 HKDF-Expand (RFC 5869)
 
 Final key derivation with domain separation:
 
@@ -246,7 +258,7 @@ def hkdf_expand(prk, info, length):
     return okm[:length]
 ```
 
-### 6.6 Output
+### 6.5 Output
 
 The final output is **64 bytes (512 bits)** of key material:
 - First 32 bytes: 256-bit encryption key

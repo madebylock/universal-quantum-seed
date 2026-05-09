@@ -193,6 +193,18 @@ def x25519_keygen(seed):
     return sk, pk
 
 
+def _require_dh_lengths(sk, pk):
+    if len(sk) != 32:
+        raise ValueError(f"X25519 sk must be 32 bytes, got {len(sk)}")
+    if len(pk) != 32:
+        raise ValueError(f"X25519 pk must be 32 bytes, got {len(pk)}")
+
+
+def _reject_low_order_shared_secret(result):
+    if hmac.compare_digest(result, _ZERO_32):
+        raise ValueError("X25519: low-order input point (all-zero shared secret)")
+
+
 def x25519(sk, pk):
     """Compute X25519 shared secret.
 
@@ -206,26 +218,17 @@ def x25519(sk, pk):
     Raises:
         ValueError: If the result is the all-zero point (low-order input).
     """
-    if len(sk) != 32:
-        raise ValueError(f"X25519 sk must be 32 bytes, got {len(sk)}")
-    if len(pk) != 32:
-        raise ValueError(f"X25519 pk must be 32 bytes, got {len(pk)}")
+    _require_dh_lengths(sk, pk)
 
     if _HAS_NACL:
         # libsodium: constant-time scalar multiplication
         result = nacl.bindings.crypto_scalarmult(sk, pk)
-        # Constant-time low-order check (no early-exit byte comparison)
-        if hmac.compare_digest(result, _ZERO_32):
-            raise ValueError("X25519: low-order input point (all-zero shared secret)")
+        _reject_low_order_shared_secret(result)
         return result
 
     u = _x25519_raw(sk, pk)
     result = _encode_u(u)
-
-    # Constant-time low-order check
-    if hmac.compare_digest(result, _ZERO_32):
-        raise ValueError("X25519: low-order input point (all-zero shared secret)")
-
+    _reject_low_order_shared_secret(result)
     return result
 
 
@@ -246,8 +249,8 @@ def x25519_pk_from_sk(sk):
     return _encode_u(_x25519_raw(sk, (9).to_bytes(32, 'little')))
 
 
-def _x25519_raw_bytes(sk, pk):
-    """Compute raw X25519 DH without low-order exception.
+def _x25519_raw_bytes_no_reject(sk, pk):
+    """Compute raw X25519 DH for implicit-rejection protocols.
 
     Always returns 32 bytes. Returns all-zeros for low-order inputs
     instead of raising. Used by hybrid KEM for constant-time decapsulation
@@ -256,6 +259,7 @@ def _x25519_raw_bytes(sk, pk):
     Prefers libsodium (constant-time C) over pure Python (variable-size
     int timing leak is worse than any exception-path difference).
     """
+    _require_dh_lengths(sk, pk)
     if _HAS_NACL:
         try:
             return nacl.bindings.crypto_scalarmult(sk, pk)
@@ -268,14 +272,14 @@ def _x25519_raw_bytes(sk, pk):
     return _encode_u(_x25519_raw(sk, pk))
 
 
+def _x25519_raw_bytes(sk, pk):
+    """Compute raw X25519 DH and reject low-order all-zero outputs."""
+    result = _x25519_raw_bytes_no_reject(sk, pk)
+    _reject_low_order_shared_secret(result)
+    return result
+
+
 def _x25519_raw_bytes_into(sk, pk, out):
-    """Like _x25519_raw_bytes but writes into a mutable bytearray for secure wiping."""
-    if _HAS_NACL:
-        try:
-            out[:] = nacl.bindings.crypto_scalarmult(sk, pk)
-            return out
-        except Exception:
-            # Fall through to pure-Python on libsodium error (see above).
-            pass
-    out[:] = _encode_u(_x25519_raw(sk, pk))
+    """Like _x25519_raw_bytes but writes into a mutable bytearray."""
+    out[:] = _x25519_raw_bytes(sk, pk)
     return out

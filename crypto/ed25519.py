@@ -130,8 +130,23 @@ _IDENTITY_ENCODED = b'\x01' + b'\x00' * 31  # Encoding of identity point (0, 1)
 # ── Field Helpers ───────────────────────────────────────────────
 
 def _modinv(a, m=_P):
-    """Modular inverse via Fermat's little theorem (m is prime)."""
-    return pow(a, m - 2, m)
+    """Modular inverse with a fixed public-exponent ladder.
+
+    Avoids CPython's variable-time built-in modular exponentiation path for
+    private-key Ed25519 workflows.  Python big integers are not a native
+    constant-time field backend, but the exponentiation schedule is fixed by
+    public field parameters and does not branch on the secret input.
+    """
+    a %= m
+    exponent = m - 2
+    result = 1 % m
+    for bit_index in range(exponent.bit_length() - 1, -1, -1):
+        squared = (result * result) % m
+        multiplied = (squared * a) % m
+        bit = (exponent >> bit_index) & 1
+        mask = -bit
+        result = (multiplied & mask) | (squared & ~mask)
+    return result
 
 
 def _to_affine(P):
@@ -375,16 +390,28 @@ def ed25519_keygen(seed):
     if len(seed) != 32:
         raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
 
-    if _HAS_NACL:
-        pk, sk = nacl.bindings.crypto_sign_seed_keypair(seed)
-        return sk, pk
-
-    h = hashlib.sha512(seed).digest()
-    a = int.from_bytes(_clamp(h), 'little')
-    pk_point = _scalar_mult_base(a)
-    pk_bytes = _encode_point(pk_point)
-
+    pk_bytes = _public_key_from_seed(seed)
     return seed + pk_bytes, pk_bytes
+
+
+def _public_key_from_seed(seed):
+    """Derive the RFC 8032 public key for a 32-byte Ed25519 seed."""
+    if len(seed) != 32:
+        raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
+
+    if _HAS_NACL:
+        pk, _sk = nacl.bindings.crypto_sign_seed_keypair(seed)
+        return bytes(pk)
+
+    h_buf = bytearray(hashlib.sha512(seed).digest())
+    _mlock(h_buf)
+    try:
+        a = int.from_bytes(_clamp(h_buf), 'little')
+        pk_point = _scalar_mult_base(a)
+        return _encode_point(pk_point)
+    finally:
+        _munlock(h_buf)
+        _secure_zero(h_buf)
 
 
 def ed25519_sign(message, sk_bytes):
@@ -407,7 +434,11 @@ def ed25519_sign(message, sk_bytes):
     if len(sk_bytes) != 64:
         raise ValueError(f"Ed25519 sk must be 64 bytes, got {len(sk_bytes)}")
 
+    seed = sk_bytes[:32]
     pk_bytes = sk_bytes[32:]
+    derived_pk = _public_key_from_seed(seed)
+    if not hmac.compare_digest(pk_bytes, derived_pk):
+        raise ValueError("Ed25519 secret key public key does not match seed")
 
     if _HAS_NACL:
         signed = nacl.bindings.crypto_sign(bytes(message), sk_bytes)
@@ -416,8 +447,6 @@ def ed25519_sign(message, sk_bytes):
         if not ed25519_verify(message, sig, pk_bytes):
             raise RuntimeError("Ed25519 verify-after-sign failed (fault detected)")
         return sig
-
-    seed = sk_bytes[:32]
 
     # Use bytearray for secret intermediates so they can be securely wiped
     h_buf = bytearray(hashlib.sha512(seed).digest())

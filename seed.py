@@ -43,7 +43,7 @@ Usage:
     seed   = get_seed(words)                          # 64-byte master seed
     seed   = get_seed(words, "passphrase")            # with passphrase (second factor)
     prof   = get_profile(seed, "personal")            # hidden profile — independent 64-byte key
-    fp     = get_fingerprint(words)                   # "A3F1B2C4" visual fingerprint
+    fp     = get_fingerprint(words)                   # 128-bit visual fingerprint
     sk, pk = generate_quantum_keypair(seed, "ml-dsa-65")  # post-quantum keypair
     idx   = resolve("dog")                          # 15
     idxs, errs = resolve(["dog", "sun", "key"])     # ([15, 63, 136], [])
@@ -764,8 +764,43 @@ def _collect_entropy(n_bytes, extra_entropy=None):
     return bytes(out[:n_bytes])
 
 
-_MAX_ENTROPY_RETRIES = 10
 _VALIDATION_SAMPLE_SIZE = 1024  # bytes — large enough for statistical tests
+_ENTROPY_HEALTH_SAMPLES = 5
+_ENTROPY_HEALTH_MIN_PASSES = 3
+
+
+def _entropy_tests_pass(tests):
+    return all(t["pass"] for t in tests.values())
+
+
+def _validate_entropy_pipeline(extra_entropy=None):
+    """Run a bounded RNG health check without retrying until success.
+
+    Statistical tests naturally produce occasional outliers, so seed creation
+    uses a fixed batch and majority decision instead of conditioning generation
+    on the first sample that happens to pass. A broken source fails closed.
+    """
+    samples = []
+    pass_count = 0
+    for sample_index in range(_ENTROPY_HEALTH_SAMPLES):
+        test_sample = _collect_entropy(_VALIDATION_SAMPLE_SIZE, extra_entropy)
+        tests = _test_entropy(test_sample)
+        sample_passed = _entropy_tests_pass(tests)
+        if sample_passed:
+            pass_count += 1
+        samples.append({
+            "sample": sample_index,
+            "pass": sample_passed,
+            "tests": tests,
+        })
+
+    return {
+        "pass": pass_count >= _ENTROPY_HEALTH_MIN_PASSES,
+        "passed": pass_count,
+        "required": _ENTROPY_HEALTH_MIN_PASSES,
+        "total": _ENTROPY_HEALTH_SAMPLES,
+        "samples": samples,
+    }
 
 
 def generate_words(word_count=36, extra_entropy=None, language=None):
@@ -775,11 +810,10 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     HMAC-SHA-256 with domain separation. This provides 16-bit error detection
     (1-in-65,536 false positive rate).
 
-    The entropy pipeline is validated before use: a 1024-byte sample is
-    drawn from the same sources and tested with four statistical tests
-    (monobit, chi-squared, runs, autocorrelation). If any test fails,
-    the sample is discarded and the pipeline is retried — up to 10
-    attempts. Only after validation passes is the actual seed generated.
+    The entropy pipeline is validated before use with a fixed batch of
+    1024-byte samples drawn from the same sources and tested with four
+    statistical tests (monobit, chi-squared, runs, autocorrelation). The
+    batch must pass by majority before the actual seed entropy is drawn.
 
     Args:
         word_count: 24 (176-bit, 22 random + 2 checksum; compatibility) or
@@ -793,7 +827,7 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
 
     Raises:
         ValueError: If word_count is not 24 or 36, or language is unknown.
-        RuntimeError: If all 10 entropy attempts fail validation
+        RuntimeError: If the entropy health-check batch fails validation
                       (indicates a compromised or broken RNG).
     """
     if word_count not in (24, 36):
@@ -807,23 +841,20 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     else:
         word_map = _BASE
 
-    for _ in range(_MAX_ENTROPY_RETRIES):
-        # Validate the entropy pipeline with a large sample (1024 bytes)
-        # so the statistical tests have enough data to detect real bias.
-        test_sample = _collect_entropy(_VALIDATION_SAMPLE_SIZE, extra_entropy)
-        tests = _test_entropy(test_sample)
-        if all(t["pass"] for t in tests.values()):
-            # Pipeline is healthy — now generate the random words
-            entropy = _collect_entropy(data_count, extra_entropy)
-            indexes = list(entropy)
-            # Append 2 checksum words
-            indexes.extend(_compute_checksum(indexes))
-            return [(idx, word_map[idx]) for idx in indexes]
+    health = _validate_entropy_pipeline(extra_entropy)
+    if not health["pass"]:
+        raise RuntimeError(
+            "Entropy failed validation "
+            f"({health['passed']}/{health['total']} samples passed; "
+            f"{health['required']} required) — RNG source may be compromised. "
+            "Do NOT generate seeds on this system."
+        )
 
-    raise RuntimeError(
-        f"Entropy failed validation {_MAX_ENTROPY_RETRIES} times — "
-        "RNG source may be compromised. Do NOT generate seeds on this system."
-    )
+    entropy = _collect_entropy(data_count, extra_entropy)
+    indexes = list(entropy)
+    # Append 2 checksum words
+    indexes.extend(_compute_checksum(indexes))
+    return [(idx, word_map[idx]) for idx in indexes]
 
 
 def _compute_checksum(indexes):
@@ -927,6 +958,36 @@ def _to_indexes(seed):
     return indexes
 
 
+def _passphrase_to_bytes(passphrase) -> bytes:
+    """NFKC-normalize a passphrase and return its UTF-8 bytes.
+
+    NFKC prevents cross-platform fund loss from different Unicode
+    representations of the same visual characters (macOS NFD vs Windows NFC).
+    """
+    if not passphrase:
+        return b""
+    return unicodedata.normalize("NFKC", passphrase).encode("utf-8")
+
+
+def _build_seed_payload(indexes, passphrase="") -> bytes:
+    """Build the length-prefixed, domain-separated UQS v1 seed payload.
+
+    Layout: domain + word-count (uint16 LE) + per-position (pos, idx) pairs
+    + b"\\x01passphrase" tag + passphrase length (uint32 LE) + passphrase bytes.
+    Each field is length- or domain-tagged so the boundary between the index
+    region and the passphrase is unambiguous (prevents cross-length collisions).
+    """
+    passphrase_bytes = _passphrase_to_bytes(passphrase)
+    payload = bytearray(_DOMAIN + b"-seed-payload-v1")
+    payload.extend(struct.pack("<H", len(indexes)))
+    for pos, idx in enumerate(indexes):
+        payload.extend(struct.pack("<BB", pos, idx))
+    payload.extend(b"\x01passphrase")
+    payload.extend(struct.pack("<I", len(passphrase_bytes)))
+    payload.extend(passphrase_bytes)
+    return bytes(payload)
+
+
 def get_seed(words, passphrase=""):
     """Derive a 64-byte master seed from words + optional passphrase.
 
@@ -938,6 +999,7 @@ def get_seed(words, passphrase=""):
         1. Checksum verification — rejects corrupted words before derivation
         2. Positional binding — each data icon is tagged with its slot index
         3. Passphrase mixing — optional second factor mixed into input
+           with explicit length-prefixing and field/domain separation
         4. HKDF-Extract — collapses payload into a pseudorandom key (RFC 5869)
         5. Chained KDF — PBKDF2-SHA512 (600k rounds) then Argon2id (64 MiB)
         6. HKDF-Expand — derives final 64-byte seed with domain separation
@@ -971,17 +1033,8 @@ def get_seed(words, passphrase=""):
         raise ValueError("invalid seed checksum")
     indexes = data
 
-    # Step 1: Position-tagged payload — each data icon is bound to its slot
-    payload = b""
-    for pos, idx in enumerate(indexes):
-        payload += struct.pack("<BB", pos, idx)
-
-    # Step 2: Mix passphrase into payload (influences every downstream step)
-    # NFKC normalization prevents cross-platform fund loss from different
-    # Unicode representations of the same visual characters (macOS NFD vs
-    # Windows NFC).
-    if passphrase:
-        payload += unicodedata.normalize("NFKC", passphrase).encode("utf-8")
+    # Step 1-2: Build a versioned, position-tagged, length-prefixed payload.
+    payload = _build_seed_payload(indexes, passphrase)
 
     # Step 3: HKDF-Extract — collapse payload + passphrase into fixed PRK
     prk = hmac.new(_DOMAIN, payload, hashlib.sha512).digest()
@@ -1141,13 +1194,16 @@ def generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0, _wo
     raise ValueError(f"Unknown quantum algorithm: {algorithm!r}")
 
 
-def get_fingerprint(seed, passphrase=""):
-    """Compute a short visual fingerprint for verification.
+_FINGERPRINT_BITS = (32, 64, 128, 256)
 
-    Derives the full master seed via get_seed() and returns
-    SHA-256(master_seed)[:4] as an 8-char uppercase hex string.
-    This ensures the fingerprint matches regardless of import format —
-    the same master key always produces the same fingerprint.
+
+def get_fingerprint(seed, passphrase="", *, bits=32):
+    """Compute a visual fingerprint for verification.
+
+    Derives the full master seed via get_seed() and returns the leading
+    ``bits`` of SHA-256(master_seed) as an uppercase hex string. This
+    matches regardless of import format — the same master key always
+    produces the same fingerprint.
 
     Runs the full PBKDF2 + Argon2id pipeline (both with and without
     passphrase), so this is NOT instant. Callers should run it in a
@@ -1156,12 +1212,22 @@ def get_fingerprint(seed, passphrase=""):
     Args:
         seed: List of icon indexes (ints 0-255) or words (strings in any language).
         passphrase: Optional passphrase (if set, fingerprint changes).
+        bits: Output strength. One of 32, 64, 128, 256.
+            32  = 8 hex chars  — short, easy to scan, BIP-32-style typo
+                  detection. Default.
+            64  = 16 hex chars — middle ground.
+            128 = 32 hex chars — collision-resistant for audit comparison.
+            256 = 64 hex chars — full SHA-256.
 
     Returns:
-        8-char uppercase hex string, e.g. "A3F1B2C4".
+        Uppercase hex string of length bits/4.
     """
+    if bits not in _FINGERPRINT_BITS:
+        raise ValueError(
+            f"bits must be one of {_FINGERPRINT_BITS}, got {bits!r}"
+        )
     key = get_seed(seed, passphrase)
-    return hashlib.sha256(key).hexdigest()[:8].upper()
+    return hashlib.sha256(key).hexdigest()[: bits // 4].upper()
 
 def get_entropy_bits(word_count, passphrase=""):
     """Calculate total entropy in bits from seed words + passphrase.

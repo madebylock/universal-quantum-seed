@@ -28,7 +28,12 @@ import hashlib
 import hmac
 import os
 
-from .x25519 import x25519_keygen, x25519, x25519_pk_from_sk, _x25519_raw_bytes
+from .x25519 import (
+    x25519,
+    x25519_keygen,
+    x25519_pk_from_sk,
+    _x25519_raw_bytes_no_reject,
+)
 from .ml_kem import (
     ML_KEM_CT_SIZE,
     ML_KEM_DK_SIZE,
@@ -229,8 +234,8 @@ def _x25519_shared_or_fallback(x_sk, eph_pk, ct):
     then selects based on whether the result is all-zeros (low-order point).
     No exception-based branching — uses branchless byte selection.
     """
-    # Always compute the raw DH result (never raises)
-    result = _x25519_raw_bytes(x_sk, eph_pk)
+    # Always compute the raw DH result (low-order results are handled below).
+    result = _x25519_raw_bytes_no_reject(x_sk, eph_pk)
     # Always compute the fallback
     fallback = hmac.new(
         x_sk, b"hybrid-kem-x25519-fail" + ct, hashlib.sha256

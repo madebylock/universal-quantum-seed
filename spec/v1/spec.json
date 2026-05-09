@@ -43,25 +43,20 @@
       },
       {
         "stage": 1,
-        "name": "Positional Binding",
-        "description": "Pack each data index with its zero-based position as (pos, idx) byte pairs, little-endian"
+        "name": "Length-Prefixed Payload",
+        "description": "Build a versioned, domain-separated payload with explicit length prefixes on every variable-length field. Layout: b'universal-seed-v1-seed-payload-v1' || uint16_LE(word_count) || (pos, idx) bytes || b'\\x01passphrase' || uint32_LE(passphrase_byte_len) || NFKC(passphrase) bytes. The domain prefix, word-count prefix, field tag, and passphrase length prefix together ensure that no two distinct (indexes, passphrase) inputs share a payload."
       },
       {
         "stage": 2,
-        "name": "Passphrase Mixing",
-        "description": "Append raw UTF-8 passphrase bytes to positional payload"
-      },
-      {
-        "stage": 3,
         "name": "HKDF-Extract",
         "algorithm": "HMAC-SHA-512",
         "key": "universal-seed-v1",
         "key_bytes": 17,
-        "message": "positional payload + optional passphrase bytes",
+        "message": "length-prefixed payload from stage 1",
         "output_bytes": 64
       },
       {
-        "stage": 4,
+        "stage": 3,
         "name": "Chained KDF Stretching",
         "substages": [
           {
@@ -85,7 +80,7 @@
         ]
       },
       {
-        "stage": 5,
+        "stage": 4,
         "name": "HKDF-Expand",
         "algorithm": "HMAC-SHA-512",
         "info": "universal-seed-v1-master",
