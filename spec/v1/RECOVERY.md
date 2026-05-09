@@ -63,37 +63,36 @@ Only the data indexes enter the key derivation pipeline:
 data_indexes = indexes[:-2]   # 22 data (24-word) or 34 data (36-word)
 ```
 
-### Step 4: Positional Binding
+### Step 4: Length-Prefixed Payload
 
-Pack each data index with its zero-based position as a (position, index) byte pair,
-little-endian:
+Build a versioned, domain-separated payload with explicit length prefixes on
+every variable-length field. Each field is length- or domain-tagged so the
+boundary between the index region and the passphrase is unambiguous:
 
 ```python
-import struct
+import struct, unicodedata
 
-payload = b""
+# NFKC normalization prevents cross-platform fund loss from different
+# Unicode representations (macOS NFD vs Windows NFC).
+passphrase_bytes = (
+    unicodedata.normalize("NFKC", passphrase).encode("utf-8") if passphrase else b""
+)
+
+payload  = b"universal-seed-v1-seed-payload-v1"   # domain + version
+payload += struct.pack("<H", len(data_indexes))   # uint16 LE word count
 for pos, idx in enumerate(data_indexes):
-    payload += struct.pack("<BB", pos, idx)
+    payload += struct.pack("<BB", pos, idx)       # (pos, idx) bytes
+payload += b"\x01passphrase"                       # field tag
+payload += struct.pack("<I", len(passphrase_bytes))  # uint32 LE pp length
+payload += passphrase_bytes
 ```
 
-This produces 44 bytes (24-word seed) or 68 bytes (36-word seed).
+The domain prefix, word-count prefix, field tag, and passphrase-length prefix
+together ensure no two distinct `(indexes, passphrase)` inputs share a payload
+— including across the 24-word and 36-word formats. An empty passphrase `""`
+produces the same result as no passphrase.
 
-### Step 5: Passphrase Mixing
-
-If a passphrase was used, NFKC-normalize it and append the UTF-8 bytes:
-
-```python
-import unicodedata
-
-if passphrase:
-    payload += unicodedata.normalize("NFKC", passphrase).encode("utf-8")
-```
-
-**NFKC normalization** ensures the same visual passphrase produces the same bytes
-regardless of platform (macOS NFD vs Windows NFC). No trimming or case folding.
-An empty string `""` produces the same result as no passphrase.
-
-### Step 6: HKDF-Extract (RFC 5869)
+### Step 5: HKDF-Extract (RFC 5869)
 
 Collapse the payload into a 64-byte pseudorandom key using HMAC-SHA-512:
 
@@ -105,7 +104,7 @@ prk = HMAC-SHA512(key=b"universal-seed-v1", message=payload)
 - Message: positional payload + optional passphrase bytes
 - Output: 64 bytes (512 bits)
 
-### Step 7: PBKDF2-SHA-512
+### Step 6: PBKDF2-SHA-512
 
 Stretch the PRK through PBKDF2:
 
@@ -118,7 +117,7 @@ stage1 = PBKDF2-SHA512(
 )
 ```
 
-### Step 8: Argon2id
+### Step 7: Argon2id
 
 Further harden through Argon2id:
 
@@ -134,7 +133,7 @@ stage2 = Argon2id(
 )
 ```
 
-### Step 9: HKDF-Expand (RFC 5869)
+### Step 8: HKDF-Expand (RFC 5869)
 
 Derive the final 64-byte master key:
 
@@ -152,7 +151,7 @@ def hkdf_expand(prk, info, length):
 master_key = hkdf_expand(stage2, b"universal-seed-v1-master", 64)
 ```
 
-### Step 10: Done
+### Step 9: Done
 
 `master_key` is your 64-byte (512-bit) master seed.
 
@@ -244,7 +243,9 @@ To verify you've recovered correctly, compute the fingerprint from the
 master seed (always runs full KDF):
 
 ```python
-master_key = get_seed(full_seed, passphrase)  # full recovery (Steps 4-9)
+master_key = get_seed(full_seed, passphrase)   # full recovery (Steps 4-8)
+# Default fingerprint is 8 hex chars (32 bits). Use bits=64/128/256 for
+# longer/audit-strength fingerprints.
 fingerprint = SHA-256(master_key)[0:4].hex().upper()  # e.g. "3F6FEE12"
 ```
 

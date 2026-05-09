@@ -275,27 +275,22 @@ After generation, the seed is transformed into a 512-bit master key through a **
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
-    │ 1. Positional Binding    │  Each data icon tagged with its slot index
-    │    (pos, icon) pairs     │  Prevents reordering attacks
+    │ 1. Length-Prefixed       │  Domain + word-count + (pos, icon) pairs
+    │    Payload               │  + tag + passphrase length + passphrase
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
-    │ 2. Passphrase Mixing     │  Optional second factor
-    │                          │  Appended to payload before extraction
+    │ 2. HKDF-Extract          │  HMAC-SHA512 with domain separator
+    │    RFC 5869              │  Collapses payload → PRK
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
-    │ 3. HKDF-Extract          │  HMAC-SHA512 with domain separator
-    │    RFC 5869              │  Collapses (seed + passphrase) → PRK
-    └────┬─────────────────────┘
-         │
-    ┌────▼─────────────────────┐
-    │ 4. Chained KDF           │  PBKDF2-SHA512 (600k rounds)
+    │ 3. Chained KDF           │  PBKDF2-SHA512 (600k rounds)
     │    PBKDF2 → Argon2id     │  then Argon2id (64 MiB × 3 iter × 4 lanes)
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
-    │ 5. HKDF-Expand           │  Domain-separated final derivation
+    │ 4. HKDF-Expand           │  Domain-separated final derivation
     │    RFC 5869              │  Produces 64 bytes of key material
     └────┬─────────────────────┘
          │
@@ -305,27 +300,30 @@ After generation, the seed is transformed into a 512-bit master key through a **
     └──────────────────────────┘
 ```
 
-### Layer 1 — Positional Binding
+### Layer 1 — Length-Prefixed Payload
 
-Each icon is tagged with its **slot position** before hashing:
-
-```
-payload = [(pos=0, icon=15), (pos=1, icon=63), (pos=2, icon=136), ...]
-```
-
-**Why:** Each icon is cryptographically bound to its exact slot. Position tagging makes the security property **explicit** rather than relying on implicit byte ordering — the position-value relationship is part of the hashed data itself. This is a cryptographic best practice (structured commitment) that ensures `[dog, sun, key]` and `[sun, dog, key]` always produce completely different keys, regardless of how the payload is serialized.
-
-### Layer 2 — Passphrase Mixing
-
-The optional passphrase is UTF-8 encoded and appended to the position-tagged payload **before** extraction. This ensures the passphrase influences every downstream step:
+Each variable-length field is domain- or length-prefixed so the boundary
+between the index region and the passphrase region is unambiguous:
 
 ```
-payload = [(pos=0, icon=15), (pos=1, icon=63), ...] + passphrase_bytes
+payload = b"universal-seed-v1-seed-payload-v1"
+        + uint16_LE(word_count)
+        + (pos=0, icon=15) + (pos=1, icon=63) + ...
+        + b"\x01passphrase"
+        + uint32_LE(len(passphrase_bytes))
+        + NFKC(passphrase) bytes
 ```
 
-**Why:** The passphrase acts as a **second factor** (something you *know* in addition to the seed you *have*). By mixing it into the input keying material before HKDF-Extract, it becomes part of the PRK — and therefore affects the chained KDF, HKDF-Expand, and every derived key. Same seed + different passphrase = completely unrelated output. Brute-forcing the passphrase costs ~2 seconds per attempt (full PBKDF2 + Argon2id chain).
+**Why:** The `(pos, icon)` pairs cryptographically bind each icon to its slot
+(reordering = different key). The version tag, word-count prefix, field tag,
+and passphrase-length prefix together ensure no two distinct
+`(indexes, passphrase)` inputs share a payload — including across the 24-word
+and 36-word formats. The passphrase acts as a **second factor** (something
+you *know*), and brute-forcing it costs ~2 seconds per attempt (full PBKDF2 +
+Argon2id chain). NFKC normalization keeps the same visual passphrase
+producing the same bytes on macOS NFD vs Windows NFC.
 
-### Layer 3 — HKDF-Extract (RFC 5869)
+### Layer 2 — HKDF-Extract (RFC 5869)
 
 The combined payload (seed + passphrase) is collapsed into a fixed-size **pseudorandom key (PRK)** using HMAC-SHA512 with a domain separator (`universal-seed-v1`):
 
@@ -335,7 +333,7 @@ PRK = HMAC-SHA512(key="universal-seed-v1", msg=payload)
 
 **Why:** HKDF-Extract is a proven randomness extractor. It takes the variable-length payload (which may have structure — repeating icons, short seeds, passphrase) and produces a uniformly distributed 512-bit key. The domain separator ensures that keys derived by this system can **never collide** with keys from any other system, even if the input data is identical.
 
-### Layer 4 — Chained Key Stretching (PBKDF2 → Argon2id)
+### Layer 3 — Chained Key Stretching (PBKDF2 → Argon2id)
 
 The PRK is stretched through **two KDFs in series** — PBKDF2-SHA512 first, then Argon2id on top. Both always run; an attacker must break both to recover the key.
 
@@ -361,7 +359,7 @@ Argon2id is the **winner of the Password Hashing Competition** (2015) and the cu
 pip install argon2-cffi   # optional — ~100x faster, pure Python fallback included
 ```
 
-### Layer 5 — HKDF-Expand (RFC 5869)
+### Layer 4 — HKDF-Expand (RFC 5869)
 
 The stretched key is expanded into the final 64-byte master key using HKDF-Expand with a domain-specific info string:
 
@@ -607,7 +605,7 @@ print(kdf_info())
 | `verify_checksum` | `verify_checksum(words)` | `bool` — True if last 2 words match expected checksum |
 | `get_seed` | `get_seed(words, passphrase="")` | `bytes` — 64-byte master seed (checksum verified & stripped) |
 | `get_profile` | `get_profile(seed, profile_password)` | `bytes` — 64-byte profile key (instant HMAC, no KDF) |
-| `get_fingerprint` | `get_fingerprint(seed, passphrase="")` | `str` — 8-char hex (checksum stripped) |
+| `get_fingerprint` | `get_fingerprint(seed, passphrase="", *, bits=32)` | `str` — uppercase hex; `bits` ∈ {32, 64, 128, 256} (default 32 → 8 chars) |
 | `get_entropy_bits` | `get_entropy_bits(word_count, passphrase="")` | `float` — estimated total entropy |
 | `resolve` | `resolve(word_or_list, strict=False)` | `str` → `int \| None`; `list` → `(indexes, errors)` |
 | `search` | `search(prefix, limit=10)` | `list[(str, int)]` — word/index pairs |

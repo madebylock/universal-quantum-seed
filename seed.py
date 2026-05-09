@@ -43,7 +43,7 @@ Usage:
     seed   = get_seed(words)                          # 64-byte master seed
     seed   = get_seed(words, "passphrase")            # with passphrase (second factor)
     prof   = get_profile(seed, "personal")            # hidden profile — independent 64-byte key
-    fp     = get_fingerprint(words)                   # 128-bit visual fingerprint
+    fp     = get_fingerprint(words)                   # 8-char visual fingerprint
     sk, pk = generate_quantum_keypair(seed, "ml-dsa-65")  # post-quantum keypair
     idx   = resolve("dog")                          # 15
     idxs, errs = resolve(["dog", "sun", "key"])     # ([15, 63, 136], [])

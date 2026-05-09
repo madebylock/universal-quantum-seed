@@ -184,7 +184,7 @@
         "public_key_size": 1984,
         "secret_key_size": 4096,
         "signature_size": 3373,
-        "context_max_bytes": 241,
+        "context_max_bytes": 255,
         "domain": "hybrid-dsa-v1",
         "stripping_resistance": true,
         "verify_after_sign": true,

@@ -2306,23 +2306,6 @@ class TestAesGcm(unittest.TestCase):
         decrypted = aes_gcm_decrypt(key, nonce, ct)
         self.assertEqual(decrypted, b"")
 
-    def test_pure_python_fallback(self):
-        """Force pure-Python mode and verify NIST vector."""
-        import crypto.aes_gcm as mod
-        saved = mod._HAS_CRYPTO
-        mod._HAS_CRYPTO = False
-        try:
-            v = _AES_GCM_VECTORS[2]
-            key, nonce = self._h(v[0]), self._h(v[1])
-            pt, aad = self._h(v[2]), self._h(v[3])
-            expected = self._h(v[4])
-            ct = mod.aes_gcm_encrypt(key, nonce, pt, aad)
-            self.assertEqual(ct, expected)
-            decrypted = mod.aes_gcm_decrypt(key, nonce, ct, aad)
-            self.assertEqual(decrypted, pt)
-        finally:
-            mod._HAS_CRYPTO = saved
-
     def test_invalid_key_size(self):
         """Keys that aren't 32 bytes should be rejected."""
         from crypto.aes_gcm import aes_gcm_encrypt
@@ -2334,6 +2317,131 @@ class TestAesGcm(unittest.TestCase):
         from crypto.aes_gcm import aes_gcm_encrypt
         with self.assertRaises(ValueError):
             aes_gcm_encrypt(b"\x00" * 32, b"\x00" * 8, b"test")
+
+
+class TestAesGcmPurePython(unittest.TestCase):
+    """AES-256-GCM with `cryptography` package force-disabled.
+
+    Exercises the pure-Python AES-GCM implementation across NIST vectors,
+    random round-trip, tamper detection, and edge cases — proving the
+    library works correctly on systems without `cryptography` installed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import crypto.aes_gcm as mod
+        cls._mod = mod
+        cls._saved = mod._HAS_CRYPTO
+        mod._HAS_CRYPTO = False
+        assert not mod._HAS_CRYPTO, "Failed to disable cryptography for AES-GCM"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._mod._HAS_CRYPTO = cls._saved
+
+    def _h(self, hex_str: str) -> bytes:
+        return bytes.fromhex(hex_str)
+
+    def test_nist_vector_13_empty(self):
+        """NIST Test Case 13: empty plaintext, empty AAD (pure-Python path)."""
+        v = _AES_GCM_VECTORS[0]
+        key, nonce = self._h(v[0]), self._h(v[1])
+        pt, aad = self._h(v[2]), self._h(v[3])
+        expected = self._h(v[4])
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt, aad)
+        self.assertEqual(ct, expected)
+        decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct, aad)
+        self.assertEqual(decrypted, pt)
+
+    def test_nist_vector_14_zeros(self):
+        """NIST Test Case 14: 16-byte zero plaintext (pure-Python path)."""
+        v = _AES_GCM_VECTORS[1]
+        key, nonce = self._h(v[0]), self._h(v[1])
+        pt, aad = self._h(v[2]), self._h(v[3])
+        expected = self._h(v[4])
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt, aad)
+        self.assertEqual(ct, expected)
+        decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct, aad)
+        self.assertEqual(decrypted, pt)
+
+    def test_nist_vector_16_with_aad(self):
+        """NIST Test Case 16: 60-byte plaintext, 20-byte AAD (pure-Python path)."""
+        v = _AES_GCM_VECTORS[2]
+        key, nonce = self._h(v[0]), self._h(v[1])
+        pt, aad = self._h(v[2]), self._h(v[3])
+        expected = self._h(v[4])
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt, aad)
+        self.assertEqual(ct, expected)
+        decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct, aad)
+        self.assertEqual(decrypted, pt)
+
+    def test_round_trip_random(self):
+        """Round-trip with random key, nonce, and plaintext."""
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        pt = os.urandom(1000)
+        aad = os.urandom(50)
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt, aad)
+        self.assertEqual(len(ct), len(pt) + 16)
+        decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct, aad)
+        self.assertEqual(decrypted, pt)
+
+    def test_tampered_ciphertext_rejected(self):
+        """Flipping a ciphertext byte must cause tag mismatch."""
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        pt = b"This is a test message for AES-GCM"
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt)
+        tampered = bytearray(ct)
+        tampered[0] ^= 0xFF
+        with self.assertRaises((RuntimeError, Exception)):
+            self._mod.aes_gcm_decrypt(key, nonce, bytes(tampered))
+
+    def test_tampered_tag_rejected(self):
+        """Flipping a tag byte must cause tag mismatch."""
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        pt = b"Another test message"
+        ct = self._mod.aes_gcm_encrypt(key, nonce, pt)
+        tampered = bytearray(ct)
+        tampered[-1] ^= 0x01
+        with self.assertRaises((RuntimeError, Exception)):
+            self._mod.aes_gcm_decrypt(key, nonce, bytes(tampered))
+
+    def test_wrong_key_rejected(self):
+        """Decrypting with wrong key must fail."""
+        key1 = os.urandom(32)
+        key2 = os.urandom(32)
+        nonce = os.urandom(12)
+        ct = self._mod.aes_gcm_encrypt(key1, nonce, b"secret data")
+        with self.assertRaises((RuntimeError, Exception)):
+            self._mod.aes_gcm_decrypt(key2, nonce, ct)
+
+    def test_empty_plaintext(self):
+        """Empty plaintext should produce 16-byte tag only."""
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        ct = self._mod.aes_gcm_encrypt(key, nonce, b"")
+        self.assertEqual(len(ct), 16)
+        decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct)
+        self.assertEqual(decrypted, b"")
+
+    def test_cross_backend_round_trip(self):
+        """Pure-Python ciphertext must decrypt under the cryptography path."""
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        pt = os.urandom(256)
+        aad = os.urandom(32)
+        ct_pure = self._mod.aes_gcm_encrypt(key, nonce, pt, aad)
+        # Temporarily restore _HAS_CRYPTO to decrypt with the OpenSSL path.
+        self._mod._HAS_CRYPTO = self._saved
+        try:
+            if not self._mod._HAS_CRYPTO:
+                self.skipTest("cryptography not installed; cross-backend check skipped")
+            decrypted = self._mod.aes_gcm_decrypt(key, nonce, ct_pure, aad)
+            self.assertEqual(decrypted, pt)
+        finally:
+            self._mod._HAS_CRYPTO = False
 
 
 # ══════════════════════════════════════════════════════════════════

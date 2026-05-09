@@ -27,7 +27,7 @@ X25519+ML-KEM-768).
 | Entropy | 24 words = 176-bit (classical), 36 words = 272-bit (quantum-safe) |
 | Post-quantum security | 24 words = 88-bit, 36 words = 136-bit (Grover) |
 | Checksum | 16-bit HMAC-SHA-256 (1-in-65,536 error detection) |
-| Fingerprint | 8-char hex (4 bytes = 32 bits) |
+| Fingerprint | 8-char hex by default (4 bytes / 32 bits); selectable 32/64/128/256 bits |
 | Domain separator | `b"universal-seed-v1"` |
 | Icon set | 256 icons, indexed 0-255 |
 | Classical | Ed25519 (RFC 8032) + X25519 (RFC 7748) |
@@ -307,8 +307,9 @@ This ensures the same master key produces the same fingerprint regardless
 of import format (mnemonic, hex, etc.).
 
 ```python
-master_seed = get_seed(full_seed, passphrase)  # full KDF pipeline
-fingerprint = SHA-256(master_seed)[0:4].hex().upper()  # e.g. "3F6FEE12"
+master_seed = get_seed(full_seed, passphrase)   # full KDF pipeline
+# bits selects output strength: 32 (default) | 64 | 128 | 256
+fingerprint = SHA-256(master_seed)[0:bits//8].hex().upper()  # e.g. "3F6FEE12"
 ```
 
 Because the full PBKDF2 + Argon2id pipeline runs for every fingerprint
@@ -317,7 +318,8 @@ background thread.
 
 | Property | Value |
 |:---|:---|
-| Length | 8 hex characters (4 bytes = 32 bits) |
+| Default length | 8 hex characters (4 bytes = 32 bits) |
+| Selectable bits | 32, 64, 128, or 256 (8 / 16 / 32 / 64 hex chars) |
 | Format | Uppercase hex, e.g. `"3F6FEE12"` |
 | Derived from | SHA-256 of full master seed (via get_seed) |
 
@@ -447,18 +449,21 @@ signature to be valid. Security holds as long as *either* algorithm remains unbr
 | Public key | 1,984 bytes (Ed25519 pk 32B + ML-DSA-65 pk 1,952B) |
 | Signature | 3,373 bytes (Ed25519 sig 64B + ML-DSA-65 sig 3,309B) |
 | Keygen seed | 64 bytes (first 32B → Ed25519, last 32B → ML-DSA-65) |
-| Context limit | 0–241 bytes |
+| Context limit | 0–255 bytes |
 | Domain | `b"hybrid-dsa-v1"` |
 
 #### 9.5.1 Stripping Resistance
 
-Neither component signature can be extracted and used as a valid standalone signature:
+Neither component signature can be extracted and used as a valid standalone
+signature. Both algorithms sign the same domain-prefixed message body, with
+empty FIPS context for ML-DSA so the standard pqcrypto C backend can sign it:
 
 - **Ed25519** signs: `b"hybrid-dsa-v1" || len(ctx) [1 byte] || ctx || message`
-- **ML-DSA-65** uses context: `b"hybrid-dsa-v1" || 0x00 || ctx` (within FIPS 204 pure-mode formatting, which prepends `0x00 || len(ctx)` internally)
+- **ML-DSA-65** signs: `b"hybrid-dsa-v1" || len(ctx) [1 byte] || ctx || message` with FIPS 204 ctx = `b""`
 
-This domain separation ensures ML-DSA signatures produced by the hybrid scheme are NOT
-valid standalone ML-DSA-65 signatures on the same (ctx, message) pair.
+The domain prefix and caller context are bound into the signed bytes themselves,
+so the ML-DSA signature produced by the hybrid scheme is NOT a valid standalone
+ML-DSA-65 signature on the same `(ctx, message)` pair.
 
 #### 9.5.2 Verification
 
@@ -468,8 +473,9 @@ Both component verifications are always evaluated (no short-circuit on first fai
 def hybrid_dsa_verify(message, sig, pk, ctx=b""):
     ed_sig, ml_sig = sig[:64], sig[64:]
     ed_pk, ml_pk   = pk[:32], pk[32:]
-    ed_ok = ed25519_verify(b"hybrid-dsa-v1" + len(ctx).to_bytes(1,'big') + ctx + message, ed_sig, ed_pk)
-    ml_ok = ml_verify(message, ml_sig, ml_pk, ctx=b"hybrid-dsa-v1\x00" + ctx)
+    domain_msg = b"hybrid-dsa-v1" + len(ctx).to_bytes(1, 'big') + ctx + message
+    ed_ok = ed25519_verify(domain_msg, ed_sig, ed_pk)
+    ml_ok = ml_verify(domain_msg, ml_sig, ml_pk, ctx=b"")
     return ed_ok and ml_ok
 ```
 
