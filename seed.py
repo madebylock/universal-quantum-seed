@@ -907,16 +907,17 @@ def _stretch(prk):
     salt = _DOMAIN + b"-stretch"
 
     # Stage 1: PBKDF2-SHA512
-    stage1 = hashlib.pbkdf2_hmac(
-        "sha512",
-        prk,
-        salt + b"-pbkdf2",
-        iterations=_PBKDF2_ITERATIONS,
-        dklen=64,
-    )
-
-    # Stage 2: Argon2id on top of PBKDF2 output
+    stage1 = b""
     try:
+        stage1 = hashlib.pbkdf2_hmac(
+            "sha512",
+            prk,
+            salt + b"-pbkdf2",
+            iterations=_PBKDF2_ITERATIONS,
+            dklen=64,
+        )
+
+        # Stage 2: Argon2id on top of PBKDF2 output
         return hash_secret_raw(
             secret=stage1,
             salt=salt + b"-argon2id",

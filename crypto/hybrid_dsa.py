@@ -109,24 +109,13 @@ def _ed25519_message(message, ctx):
     return _DOMAIN + len(ctx).to_bytes(1, 'big') + ctx + message
 
 
-def _ml_dsa_ctx(ctx):
-    """Legacy ML-DSA context (kept for backward verification).
-
-    Format: b"hybrid-dsa-v1" + 0x00 + ctx — used by the previous hybrid
-    signing scheme that pushed domain separation into FIPS 204's ctx field.
-    Retained so ``hybrid_dsa_verify`` still accepts signatures produced by
-    older clients.
-    """
-    return _DOMAIN + b"\x00" + ctx
-
-
 def _ml_dsa_message(message, ctx):
     """Build the domain-bound message for the ML-DSA component.
 
-    Current signatures use empty FIPS context so pqcrypto can sign the
+    Signs with empty FIPS context so the pqcrypto C backend can sign the
     component.  The domain and caller context are still bound into the signed
     bytes, so the ML-DSA signature remains non-portable outside the hybrid
-    scheme.  ``_ml_dsa_ctx`` is retained for legacy verification.
+    scheme.
     """
     return _DOMAIN + len(ctx).to_bytes(1, "big") + ctx + message
 
@@ -249,8 +238,4 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
     # Both must verify — always evaluate both (no short-circuit on first failure)
     ed_ok = ed25519_verify(_ed25519_message(message, ctx), ed_sig, ed_pk)
     ml_ok = ml_verify(_ml_dsa_message(message, ctx), ml_sig, ml_pk, ctx=b"")
-    if not ml_ok:
-        legacy_ctx = _ml_dsa_ctx(ctx)
-        if len(legacy_ctx) <= 255:
-            ml_ok = ml_verify(message, ml_sig, ml_pk, ctx=legacy_ctx)
     return ed_ok and ml_ok
