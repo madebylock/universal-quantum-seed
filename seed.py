@@ -81,7 +81,15 @@ except ImportError:
             for o in objs:
                 wipe(o)
 
-# 256 base English words — one per icon position (0–255)
+# UQS v1 compatibility boundary:
+# Do not reorder, replace, or "clean up" these words in-place. Seed words
+# resolve to numeric indexes, and existing backups depend on each index keeping
+# the same English alias. Some aliases are visually or phonetically close, but
+# positional binding plus the two-word checksum catches transcription errors;
+# changing the vocabulary would create a larger recovery risk. A new vocabulary
+# must be a versioned UQS v2 format with legacy aliases/migration.
+#
+# 256 base English words - one per icon position (0-255)
 _BASE_WORDS = (
     "eye", "ear", "nose", "mouth", "tongue", "bone", "tooth", "skull",
     "heart", "brain", "baby", "foot", "muscle", "hand", "leg", "dog",
@@ -150,7 +158,12 @@ def get_languages():
 # with keys derived by other systems using the same hash functions.
 _DOMAIN = b"universal-seed-v1"
 
-# Argon2id parameters (OWASP recommended for high-value targets)
+# UQS v1 derivation compatibility boundary:
+# Keep these parameters stable for v1. Raising _ARGON2_MEMORY changes the
+# deterministic master seed for every existing phrase. The 64 MiB, t=3, p=4
+# profile matches RFC 9106's memory-constrained Argon2id recommendation and is
+# above OWASP's minimum guidance; heavier profiles must be introduced only as a
+# versioned UQS v2 KDF.
 _ARGON2_TIME = 3         # iterations
 _ARGON2_MEMORY = 65536   # 64 MiB
 _ARGON2_PARALLEL = 4     # lanes
