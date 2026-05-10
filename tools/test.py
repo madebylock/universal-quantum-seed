@@ -1525,6 +1525,15 @@ class TestSeedDebugRedaction(unittest.TestCase):
         self.assertNotIn("do", out)
         self.assertNotIn("prefix='", out)
 
+    def test_canonical_word_turns_fuzzy_match_into_strict_word(self):
+        fuzzy = "l'eye"
+
+        self.assertEqual(self.seed.resolve(fuzzy), 0)
+        self.assertIsNone(self.seed.resolve(fuzzy, strict=True))
+        canonical = self.seed.canonical_word(0)
+        self.assertEqual(canonical, "eye")
+        self.assertEqual(self.seed.resolve(canonical, strict=True), 0)
+
 
 # ══════════════════════════════════════════════════════════════════
 # Pure Python Fallback Tests

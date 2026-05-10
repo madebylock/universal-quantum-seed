@@ -9,6 +9,10 @@ and all existing imports work unchanged.
 import hashlib
 from pathlib import Path
 
+_TRUSTED_WORDLIST_SHA256 = (
+    "f24ab526b5484934d766738421eb4ea6a8199c4a69d6c450aca8a4ab48f9bc46"
+)
+
 
 def _canonical_wordlist_bytes(data: bytes) -> bytes:
     # Git stores this generated Python wordlist as LF text, while some Windows
@@ -20,8 +24,12 @@ def _verify_wordlist_integrity():
     here = Path(__file__).resolve().parent
     words_path = here / "words.py"
     digest_path = here / "words.py.sha256"
+    expected = _TRUSTED_WORDLIST_SHA256
     expected_line = digest_path.read_text(encoding="utf-8").strip()
-    expected = expected_line.split()[0].lower()
+    sidecar_expected = expected_line.split()[0].lower()
+    if sidecar_expected != expected:
+        raise ImportError(
+            "UQS wordlist integrity check failed: sidecar hash is not trusted")
     actual = hashlib.sha256(
         _canonical_wordlist_bytes(words_path.read_bytes())
     ).hexdigest()
@@ -35,6 +43,7 @@ _verify_wordlist_integrity()
 try:
     from .seed import (
         generate_words,
+        generate_seed,
         get_seed,
         get_profile,
         get_quantum_seed,
@@ -42,6 +51,7 @@ try:
         get_fingerprint,
         get_entropy_bits,
         verify_checksum,
+        validate_seed,
         _compute_checksum,
         resolve,
         search,
@@ -49,11 +59,13 @@ try:
         mouse_entropy,
         kdf_info,
         get_languages,
+        canonical_word,
         DARK_VISUALS,
     )
 except ImportError:
     from seed import (
         generate_words,
+        generate_seed,
         get_seed,
         get_profile,
         get_quantum_seed,
@@ -61,6 +73,7 @@ except ImportError:
         get_fingerprint,
         get_entropy_bits,
         verify_checksum,
+        validate_seed,
         _compute_checksum,
         resolve,
         search,
@@ -68,11 +81,13 @@ except ImportError:
         mouse_entropy,
         kdf_info,
         get_languages,
+        canonical_word,
         DARK_VISUALS,
     )
 
 __all__ = [
     "generate_words",
+    "generate_seed",
     "get_seed",
     "get_profile",
     "get_quantum_seed",
@@ -80,6 +95,7 @@ __all__ = [
     "get_fingerprint",
     "get_entropy_bits",
     "verify_checksum",
+    "validate_seed",
     "_compute_checksum",
     "resolve",
     "search",
@@ -87,5 +103,6 @@ __all__ = [
     "mouse_entropy",
     "kdf_info",
     "get_languages",
+    "canonical_word",
     "DARK_VISUALS",
 ]

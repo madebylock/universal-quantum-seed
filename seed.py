@@ -154,6 +154,16 @@ def get_languages():
     return results
 
 
+def canonical_word(index, language=None) -> str:
+    """Return the strict-resolvable display word for an icon index."""
+    idx = int(index)
+    if idx < 0 or idx > 255:
+        raise ValueError(f"word index out of range: {idx}")
+    if language and language != "english":
+        return _load_language(language)[idx]
+    return _BASE[idx]
+
+
 # Domain separator — ensures keys from this system can never collide
 # with keys derived by other systems using the same hash functions.
 _DOMAIN = b"universal-seed-v1"
@@ -868,6 +878,23 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     return [(idx, word_map[idx]) for idx in indexes]
 
 
+def generate_seed(word_count=36, extra_entropy=None, language=None):
+    """Compatibility wrapper returning display words only.
+
+    Console and older callers historically consumed a plain list of words,
+    while the core UQS API returns ``(index, word)`` pairs so callers can keep
+    indexes and display labels together.  Keep the public wrapper thin so both
+    paths share the same entropy health checks and checksum generation.
+    """
+    return [
+        word for _idx, word in generate_words(
+            word_count=word_count,
+            extra_entropy=extra_entropy,
+            language=language,
+        )
+    ]
+
+
 def _compute_checksum(indexes):
     """Compute 2 checksum indexes from a list of random seed indexes."""
     # Intentional: this checksum detects transcription mistakes; it is not an
@@ -894,6 +921,14 @@ def verify_checksum(seed):
     data = indexes[:-2]
     expected = _compute_checksum(data)
     return hmac.compare_digest(bytes(indexes[-2:]), bytes(expected))
+
+
+def validate_seed(seed) -> bool:
+    """Compatibility wrapper returning whether a UQS phrase is checksum-valid."""
+    try:
+        return verify_checksum(seed)
+    except Exception:
+        return False
 
 
 def _hkdf_expand(prk, info, length):
