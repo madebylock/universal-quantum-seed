@@ -483,8 +483,21 @@ Type = _ArgonType
 
 # Try to use the C library — it's ~100x faster
 _cffi_hash = None
+_cffi_ffi = None
+_cffi_lib = None
+_cffi_error_to_str = None
+_CffiHashingError = RuntimeError
+_ARGON2_VERSION = 0x13
 try:
-    from argon2.low_level import hash_secret_raw as _cffi_hash, Type as _CffiType
+    from argon2.exceptions import HashingError as _CffiHashingError
+    from argon2.low_level import (
+        ARGON2_VERSION as _ARGON2_VERSION,
+        error_to_str as _cffi_error_to_str,
+        ffi as _cffi_ffi,
+        hash_secret_raw as _cffi_hash,
+        lib as _cffi_lib,
+        Type as _CffiType,
+    )
     # Re-export the real Type so callers get the C enum
     Type = _CffiType
     _HAS_CFFI = True
@@ -500,9 +513,42 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
 
     Uses the C library (argon2-cffi) when available, otherwise falls
     back to the pure Python implementation above.
+
+    When the secret is a bytearray or memoryview AND the cffi low-level
+    bindings are available, the buffer is handed to the C function
+    directly via cffi.from_buffer() — no intermediate Python `bytes`
+    copy is created, so a caller-side wipe of the original buffer
+    actually clears the secret from memory.
     """
     if memory_cost > 4194304:
         raise ValueError("memory_cost must be <= 4194304 (4 GiB)")
+
+    if (
+        _cffi_lib is not None
+        and _cffi_ffi is not None
+        and isinstance(secret, (bytearray, memoryview))
+    ):
+        type_val = type if isinstance(type, int) else getattr(type, "value", type)
+        secret_view = memoryview(secret).cast("B")
+        out = _cffi_ffi.new("uint8_t[]", hash_len)
+        rv = _cffi_lib.argon2_hash(
+            time_cost,
+            memory_cost,
+            parallelism,
+            _cffi_ffi.from_buffer(secret_view),
+            len(secret_view),
+            _cffi_ffi.new("uint8_t[]", salt),
+            len(salt),
+            out,
+            hash_len,
+            _cffi_ffi.NULL,
+            0,
+            type_val,
+            _ARGON2_VERSION,
+        )
+        if rv != _cffi_lib.ARGON2_OK:
+            raise _CffiHashingError(_cffi_error_to_str(rv))
+        return bytes(_cffi_ffi.buffer(out, hash_len))
 
     if _cffi_hash is not None:
         return _cffi_hash(
