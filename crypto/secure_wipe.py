@@ -26,7 +26,10 @@ Usage:
         wipe_list(memory_blocks)
 
 Limitations:
-    - CPython only (silently no-ops on PyPy, GraalPy, etc.)
+    - Immutable-object wiping requires a validated CPython object layout.  On
+      PyPy, GraalPy, or an unrecognized CPython layout, bytearray wiping still
+      works but bytes/int/str wipe attempts fail closed with
+      SecureWipeUnsupportedError instead of silently no-oping.
     - Small ints (-5 to 256) are cached singletons — wiping them would corrupt the
       interpreter, so they are skipped. Private keys should never be this small.
     - Copies may exist in CPU registers, compiler temporaries, or Python's internal
@@ -41,8 +44,8 @@ import sys
 # Detect CPython — ctypes.memset on id() only works on CPython
 _IS_CPYTHON = hasattr(sys, "getrefcount")
 
-# Pre-compute header sizes (stable across a single CPython version)
-_INT_HEADER = sys.getsizeof(0) if _IS_CPYTHON else 0
+# Pre-compute data offsets (stable across a single CPython version)
+_INT_HEADER = 0
 _BYTES_HEADER = (sys.getsizeof(b"") - 1) if _IS_CPYTHON else 0  # -1 for null terminator
 
 # Refcount ceiling: skip objects likely interned/cached by the runtime.
@@ -65,6 +68,11 @@ if _IS_CPYTHON:
     try:
         # -- int canary: 0xDEAD is outside the small-int cache
         _canary_int = int.from_bytes(b"\xde\xad", "big")
+        _int_mem = ctypes.string_at(id(_canary_int), sys.getsizeof(_canary_int))
+        _digit_offset = _int_mem.find((0xDEAD).to_bytes(4, "little"))
+        if _digit_offset < 0:
+            raise RuntimeError("could not locate PyLong digit offset")
+        _INT_HEADER = _digit_offset
         _ci_size = sys.getsizeof(_canary_int) - _INT_HEADER
         if _ci_size > 0:
             ctypes.memset(id(_canary_int) + _INT_HEADER, 0, _ci_size)
@@ -74,9 +82,28 @@ if _IS_CPYTHON:
                 ctypes.memset(id(_canary_bytes) + _BYTES_HEADER, 0, len(_canary_bytes))
                 if _canary_bytes == b"\x00\x00\x00":
                     _LAYOUT_OK = True
-        del _canary_int, _canary_bytes, _ci_size
+        del _canary_int, _canary_bytes, _ci_size, _int_mem, _digit_offset
     except Exception:
         _LAYOUT_OK = False
+
+
+class SecureWipeUnsupportedError(RuntimeError):
+    """Raised when immutable-object wiping cannot be performed safely."""
+
+
+def secure_wipe_supported() -> bool:
+    """Return True when immutable bytes/int/str wiping is available."""
+    return bool(_IS_CPYTHON and _LAYOUT_OK)
+
+
+def _require_immutable_wipe_supported(kind: str) -> None:
+    if secure_wipe_supported():
+        return
+    runtime = "CPython" if _IS_CPYTHON else sys.implementation.name
+    raise SecureWipeUnsupportedError(
+        f"secure wipe for {kind} requires a validated CPython memory layout; "
+        f"current runtime/layout is unsupported ({runtime})"
+    )
 
 
 def wipe(obj) -> bool:
@@ -87,8 +114,10 @@ def wipe(obj) -> bool:
     For int: zeros the digit array via ctypes (CPython only).
     For str: zeros the character data via ctypes (CPython only).
 
-    Returns True if the object was wiped, False if skipped.
-    Safe to call on None, 0, empty objects, or non-CPython — returns False.
+    Returns True if the object was wiped, False if skipped because it is empty,
+    cached, unsupported, or has no known wipe strategy.  Raises
+    SecureWipeUnsupportedError when asked to wipe an immutable secret on an
+    interpreter/layout where that cannot be done safely.
     """
     if obj is None:
         return False
@@ -98,12 +127,10 @@ def wipe(obj) -> bool:
             obj[i] = 0
         return True
 
-    if not _LAYOUT_OK:
-        return False
-
     if isinstance(obj, int):
         if -5 <= obj <= 256:
             return False
+        _require_immutable_wipe_supported("int")
         size = sys.getsizeof(obj) - _INT_HEADER
         if size > 0:
             ctypes.memset(id(obj) + _INT_HEADER, 0, size)
@@ -113,6 +140,7 @@ def wipe(obj) -> bool:
     if isinstance(obj, bytes):
         if len(obj) <= 1:
             return False
+        _require_immutable_wipe_supported("bytes")
         if sys.getrefcount(obj) > _REFCOUNT_MAX:
             import logging
             logging.getLogger(__name__).debug(
@@ -125,6 +153,7 @@ def wipe(obj) -> bool:
     if isinstance(obj, str):
         if not obj:
             return False
+        _require_immutable_wipe_supported("str")
         data_bytes = sys.getsizeof(obj) - sys.getsizeof("")
         if data_bytes > 0:
             ctypes.memset(id(obj) + sys.getsizeof(""), 0, data_bytes)
