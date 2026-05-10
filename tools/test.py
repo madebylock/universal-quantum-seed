@@ -1487,6 +1487,45 @@ class TestWordlistIntegrity(unittest.TestCase):
             sys.modules.pop(spec.name, None)
 
 
+class TestSeedDebugRedaction(unittest.TestCase):
+    """DEBUG output must not leak typed words, prefixes, or resolved indexes."""
+
+    @classmethod
+    def setUpClass(cls):
+        import seed
+        cls.seed = seed
+
+    def _capture_with_debug(self, fn):
+        import io
+        import contextlib
+
+        original = self.seed.DEBUG
+        self.seed.DEBUG = True
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = fn()
+            return result, buf.getvalue()
+        finally:
+            self.seed.DEBUG = original
+
+    def test_resolve_debug_output_redacts_seed_words_and_indexes(self):
+        result, out = self._capture_with_debug(lambda: self.seed.resolve("dog"))
+
+        self.assertEqual(result, 15)
+        self.assertIn("[resolve]", out)
+        self.assertNotIn("dog", out)
+        self.assertNotIn("->", out)
+
+    def test_search_debug_output_redacts_typed_prefix(self):
+        result, out = self._capture_with_debug(lambda: self.seed.search("do"))
+
+        self.assertTrue(result)
+        self.assertIn("[search]", out)
+        self.assertNotIn("do", out)
+        self.assertNotIn("prefix='", out)
+
+
 # ══════════════════════════════════════════════════════════════════
 # Pure Python Fallback Tests
 #

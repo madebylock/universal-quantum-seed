@@ -193,6 +193,19 @@ _INNER_WORD_KEYS = [_iw for _iw, _ in _INNER_WORDS]
 
 DEBUG = False
 
+
+def _debug_trace(kind, event, t0=None, *, count=None):
+    """Emit non-secret diagnostics only when local debugging is enabled."""
+    if not DEBUG:
+        return
+    parts = [f"  [{kind}] {event}"]
+    if count is not None:
+        parts.append(f"count={int(count)}")
+    if t0 is not None:
+        parts.append(f"elapsed={(time.perf_counter() - t0) * 1000:.2f}ms")
+    print("  ".join(parts))
+
+
 # Zero-width and invisible characters to strip
 _INVISIBLE_CHARS = re.compile(
     "[\u200b\u200c\u200d\u200e\u200f\u00ad\u034f\u061c"
@@ -290,12 +303,12 @@ def _resolve_one(word, strict=False):
     if key.isdigit():
         n = int(key)
         if 0 <= n <= 255:
-            if DEBUG: print(f"  [resolve] numeric index {n}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+            _debug_trace("resolve", "numeric input accepted", t0)
             return n
 
     result = _LOOKUP.get(key)
     if result is not None:
-        if DEBUG: print(f"  [resolve] exact match '{key}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+        _debug_trace("resolve", "exact match", t0)
         return result
 
     # Try emoji-normalized (strip variation selectors)
@@ -303,11 +316,11 @@ def _resolve_one(word, strict=False):
     if e_key and e_key != key:
         result = _LOOKUP.get(e_key)
         if result is not None:
-            if DEBUG: print(f"  [resolve] emoji match '{e_key}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+            _debug_trace("resolve", "emoji match", t0)
             return result
 
     if strict:
-        if DEBUG: print(f"  [resolve] no match for '{key}' (strict)  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+        _debug_trace("resolve", "no match in strict mode", t0)
         return None
 
     # Fallback: try diacritic-stripped version
@@ -315,7 +328,7 @@ def _resolve_one(word, strict=False):
     if stripped != key:
         result = _LOOKUP.get(stripped)
         if result is not None:
-            if DEBUG: print(f"  [resolve] diacritic-stripped '{stripped}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+            _debug_trace("resolve", "diacritic fallback match", t0)
             return result
 
     # Fallback: strip Arabic definite article "ال" (al-) prefix
@@ -324,7 +337,7 @@ def _resolve_one(word, strict=False):
         bare = candidate[2:]
         result = _LOOKUP.get(bare)
         if result is not None:
-            if DEBUG: print(f"  [resolve] Arabic al- stripped '{bare}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+            _debug_trace("resolve", "arabic article fallback match", t0)
             return result
 
     # Fallback: strip Hebrew definite article "ה" (ha-) prefix
@@ -332,7 +345,7 @@ def _resolve_one(word, strict=False):
         bare = candidate[1:]
         result = _LOOKUP.get(bare)
         if result is not None:
-            if DEBUG: print(f"  [resolve] Hebrew ha- stripped '{bare}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+            _debug_trace("resolve", "hebrew article fallback match", t0)
             return result
 
     # Fallback: strip French/Italian "l'" article contraction
@@ -342,7 +355,7 @@ def _resolve_one(word, strict=False):
             bare = candidate[len(prefix):]
             result = _LOOKUP.get(bare)
             if result is not None:
-                if DEBUG: print(f"  [resolve] l' stripped '{bare}' ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+                _debug_trace("resolve", "latin article fallback match", t0)
                 return result
             break
 
@@ -353,10 +366,10 @@ def _resolve_one(word, strict=False):
                 bare = candidate[:-len(suffix)]
                 result = _LOOKUP.get(bare)
                 if result is not None:
-                    if DEBUG: print(f"  [resolve] suffix-stripped '{bare}' (removed -{suffix}) ->{result}  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+                    _debug_trace("resolve", "suffix fallback match", t0)
                     return result
 
-    if DEBUG: print(f"  [resolve] no match for '{key}'  ({(time.perf_counter()-t0)*1000:.2f}ms)")
+    _debug_trace("resolve", "no match", t0)
     return None
 
 
@@ -449,8 +462,7 @@ def search(prefix, limit=10):
                 results.append((base, idx))
                 if len(results) >= limit:
                     break
-        elapsed = (time.perf_counter() - t0) * 1000
-        if DEBUG: print(f"  [search] numeric prefix='{key}' ->{len(results)} results  ({elapsed:.2f}ms)")
+        _debug_trace("search", "numeric prefix search", t0, count=len(results))
         return results
 
     # Collect English base words that match the prefix first
@@ -508,8 +520,7 @@ def search(prefix, limit=10):
                 results.append((full_key, idx))
                 remaining -= 1
 
-    elapsed = (time.perf_counter() - t0) * 1000
-    if DEBUG: print(f"  [search] prefix='{key}' ->{len(results)} unique results  ({elapsed:.2f}ms)")
+    _debug_trace("search", "prefix search", t0, count=len(results))
     return results
 
 

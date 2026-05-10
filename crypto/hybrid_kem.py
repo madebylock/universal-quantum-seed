@@ -178,15 +178,19 @@ def hybrid_kem_encaps(ek, randomness=None):
         )
 
     if randomness is None:
-        randomness = os.urandom(64)
+        x25519_randomness = os.urandom(32)
+        ml_kem_randomness = None
     elif len(randomness) != 64:
         raise ValueError(f"Randomness must be 64 bytes, got {len(randomness)}")
+    else:
+        x25519_randomness = randomness[:32]
+        ml_kem_randomness = randomness[32:]
 
     x_pk = ek[:_X25519_PK]
     ml_ek = ek[_X25519_PK:]
 
     # X25519 ephemeral key exchange
-    eph_sk_buf = bytearray(randomness[:32])
+    eph_sk_buf = bytearray(x25519_randomness)
     _mlock(eph_sk_buf)
     try:
         eph_sk, eph_pk = x25519_keygen(bytes(eph_sk_buf))
@@ -194,7 +198,7 @@ def hybrid_kem_encaps(ek, randomness=None):
         _mlock(x_ss_buf)
         try:
             # ML-KEM encapsulation
-            ml_ct, ml_ss = ml_kem_encaps(ml_ek, randomness[32:])
+            ml_ct, ml_ss = ml_kem_encaps(ml_ek, ml_kem_randomness)
             ml_ss_buf = bytearray(ml_ss)
             _mlock(ml_ss_buf)
             try:

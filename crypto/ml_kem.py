@@ -63,6 +63,7 @@ try:
     from pqcrypto.kem.ml_kem_768 import (
         encrypt as _c_kem_encaps,
         decrypt as _c_kem_decaps,
+        generate_keypair as _c_kem_keygen,
     )
     _HAS_PQCRYPTO = True
 except ImportError:
@@ -702,6 +703,8 @@ def ml_kem_keygen(seed=None):
                               decapsulation key (2,400 bytes).
     """
     if seed is None:
+        if _HAS_PQCRYPTO:
+            return _c_kem_keygen()
         seed = os.urandom(64)
     if len(seed) != 64:
         raise ValueError(f"ML-KEM-768 keygen requires 64-byte seed, got {len(seed)}")
