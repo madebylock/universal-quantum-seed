@@ -398,7 +398,7 @@ def ed25519_keygen(seed):
             if rc != 0:
                 raise ValueError("Ed25519 key generation failed")
             return bytes(_ffi.buffer(sk, 64)), bytes(_ffi.buffer(pk, 32))
-        pk, sk = nacl.bindings.crypto_sign_seed_keypair(seed)
+        pk, sk = nacl.bindings.crypto_sign_seed_keypair(bytes(seed))
         return sk, pk
 
     pk_bytes = _public_key_from_seed(seed)
@@ -411,7 +411,7 @@ def _public_key_from_seed(seed):
         raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
 
     if _HAS_NACL:
-        pk, _sk = nacl.bindings.crypto_sign_seed_keypair(seed)
+        pk, _sk = nacl.bindings.crypto_sign_seed_keypair(bytes(seed))
         return bytes(pk)
 
     h_buf = bytearray(hashlib.sha512(seed).digest())
@@ -452,7 +452,7 @@ def ed25519_sign(message, sk_bytes):
         raise ValueError("Ed25519 secret key public key does not match seed")
 
     if _HAS_NACL:
-        signed = nacl.bindings.crypto_sign(bytes(message), sk_bytes)
+        signed = nacl.bindings.crypto_sign(bytes(message), bytes(sk_bytes))
         sig = bytes(signed[:64])
         # Verify-after-sign (fault injection countermeasure)
         if not ed25519_verify(message, sig, pk_bytes):
@@ -525,7 +525,10 @@ def ed25519_verify(message, sig_bytes, pk_bytes):
     if _HAS_NACL:
         try:
             # crypto_sign_open expects sig || message, returns message on success
-            nacl.bindings.crypto_sign_open(bytes(sig_bytes) + bytes(message), pk_bytes)
+            nacl.bindings.crypto_sign_open(
+                bytes(sig_bytes) + bytes(message),
+                bytes(pk_bytes),
+            )
             return True
         except Exception:
             return False
