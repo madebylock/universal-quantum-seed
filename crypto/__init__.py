@@ -39,7 +39,15 @@ from .ml_kem import (
 )
 
 # Hybrid
-from .hybrid_dsa import hybrid_dsa_keygen, hybrid_dsa_sign, hybrid_dsa_verify
+from .hybrid_dsa import (
+    HYBRID_DSA_VERSION,
+    SUPPORTED_HYBRID_DSA_VERSIONS,
+    get_supported_hybrid_dsa_versions,
+    hybrid_dsa_keygen,
+    hybrid_dsa_sign,
+    hybrid_dsa_verify,
+    normalize_hybrid_dsa_version,
+)
 from .hybrid_kem import hybrid_kem_keygen, hybrid_kem_encaps, hybrid_kem_decaps
 
 # KDF
@@ -64,6 +72,8 @@ __all__ = [
     "ML_KEM_EK_SIZE", "ML_KEM_DK_SIZE", "ML_KEM_CT_SIZE",
     # Hybrid
     "hybrid_dsa_keygen", "hybrid_dsa_sign", "hybrid_dsa_verify",
+    "normalize_hybrid_dsa_version", "get_supported_hybrid_dsa_versions",
+    "HYBRID_DSA_VERSION", "SUPPORTED_HYBRID_DSA_VERSIONS",
     "hybrid_kem_keygen", "hybrid_kem_encaps", "hybrid_kem_decaps",
     # KDF
     "argon2_hash", "argon2id", "blake2b",

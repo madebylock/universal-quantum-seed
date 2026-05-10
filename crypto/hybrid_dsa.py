@@ -96,9 +96,39 @@ HYBRID_DSA_SIG_SIZE = _ED25519_SIG + _ML_DSA_SIG  # 3,373
 
 # Domain prefix to prevent signature stripping attacks
 _DOMAIN = b"hybrid-dsa-v1"
+HYBRID_DSA_VERSION = 1
+SUPPORTED_HYBRID_DSA_VERSIONS = (HYBRID_DSA_VERSION,)
+_VERSION_DOMAINS = {HYBRID_DSA_VERSION: _DOMAIN}
 
 
-def _ed25519_message(message, ctx):
+def normalize_hybrid_dsa_version(version=HYBRID_DSA_VERSION) -> int:
+    """Normalize and validate a hybrid-DSA wire-format version."""
+    if version is None or version == "":
+        return HYBRID_DSA_VERSION
+    if isinstance(version, str):
+        raw = version.strip().lower()
+        if raw.startswith("v"):
+            raw = raw[1:]
+        if not raw.isdecimal():
+            raise ValueError(f"Unsupported hybrid DSA version: {version!r}")
+        version_i = int(raw, 10)
+    else:
+        version_i = int(version)
+    if version_i not in _VERSION_DOMAINS:
+        raise ValueError(f"Unsupported hybrid DSA version: {version_i}")
+    return version_i
+
+
+def get_supported_hybrid_dsa_versions() -> tuple[int, ...]:
+    """Return supported hybrid-DSA wire-format versions."""
+    return SUPPORTED_HYBRID_DSA_VERSIONS
+
+
+def _domain_for_version(version=HYBRID_DSA_VERSION) -> bytes:
+    return _VERSION_DOMAINS[normalize_hybrid_dsa_version(version)]
+
+
+def _ed25519_message(message, ctx, *, version=HYBRID_DSA_VERSION):
     """Build domain-bound message for the Ed25519 component.
 
     Format: b"hybrid-dsa-v1" + len(ctx) [1 byte] + ctx + message
@@ -106,10 +136,11 @@ def _ed25519_message(message, ctx):
     This ensures the Ed25519 signature cannot be stripped from the hybrid
     and presented as a valid standalone Ed25519 signature.
     """
-    return _DOMAIN + len(ctx).to_bytes(1, 'big') + ctx + message
+    domain = _domain_for_version(version)
+    return domain + len(ctx).to_bytes(1, 'big') + ctx + message
 
 
-def _ml_dsa_message(message, ctx):
+def _ml_dsa_message(message, ctx, *, version=HYBRID_DSA_VERSION):
     """Build the domain-bound message for the ML-DSA component.
 
     Signs with empty FIPS context so the pqcrypto C backend can sign the
@@ -117,7 +148,8 @@ def _ml_dsa_message(message, ctx):
     bytes, so the ML-DSA signature remains non-portable outside the hybrid
     scheme.
     """
-    return _DOMAIN + len(ctx).to_bytes(1, "big") + ctx + message
+    domain = _domain_for_version(version)
+    return domain + len(ctx).to_bytes(1, "big") + ctx + message
 
 
 def hybrid_dsa_keygen(seed):
@@ -153,7 +185,7 @@ def hybrid_dsa_keygen(seed):
         _secure_zero(ml_seed)
 
 
-def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
+def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
     """Sign with both Ed25519 and ML-DSA-65.
 
     Both algorithms sign the message with domain-separated contexts for
@@ -168,6 +200,8 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
         sk_bytes: 4,096-byte hybrid secret key.
         ctx: Context bytes (0-241 bytes, default empty).
              Bound into both Ed25519 and ML-DSA signing contexts.
+        version: Hybrid-DSA wire-format version. Version 1 preserves the
+             original ``hybrid-dsa-v1`` domain exactly.
 
     Returns:
         3,373-byte hybrid signature.
@@ -184,6 +218,7 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
         raise ValueError(
             f"Context string must be 0-255 bytes for hybrid DSA, got {len(ctx)}"
         )
+    version = normalize_hybrid_dsa_version(version)
 
     # Copy secret keys into mutable buffers for secure wiping
     ed_sk_buf = bytearray(sk_bytes[:_ED25519_SK])
@@ -193,11 +228,18 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
 
     try:
         # Ed25519 signs domain-prefixed message (stripping resistance)
-        ed_sig = ed25519_sign(_ed25519_message(message, ctx), bytes(ed_sk_buf))
+        ed_sig = ed25519_sign(
+            _ed25519_message(message, ctx, version=version),
+            bytes(ed_sk_buf),
+        )
 
         # ML-DSA signs a domain-prefixed message with empty FIPS context so
         # pqcrypto can provide the production signing backend.
-        ml_sig = ml_sign(_ml_dsa_message(message, ctx), bytes(ml_sk_buf), ctx=b"")
+        ml_sig = ml_sign(
+            _ml_dsa_message(message, ctx, version=version),
+            bytes(ml_sk_buf),
+            ctx=b"",
+        )
 
         sig = ed_sig + ml_sig
 
@@ -207,7 +249,7 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
         ed_pk = bytes(ed_sk_buf[32:])  # pk is embedded in ed25519 sk
         ml_pk = _ml_pk_from_sk(bytes(ml_sk_buf))
         pk_bytes = ed_pk + ml_pk
-        if not hybrid_dsa_verify(message, sig, pk_bytes, ctx=ctx):
+        if not hybrid_dsa_verify(message, sig, pk_bytes, ctx=ctx, version=version):
             raise RuntimeError("Hybrid DSA verify-after-sign failed (fault detected)")
 
         return sig
@@ -218,7 +260,7 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b""):
         _secure_zero(ml_sk_buf)
 
 
-def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
+def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
     """Verify hybrid Ed25519 + ML-DSA-65 signature.
 
     BOTH component signatures must independently verify. If either
@@ -229,6 +271,8 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
         sig_bytes: 3,373-byte hybrid signature.
         pk_bytes: 1,984-byte hybrid public key.
         ctx: Context bytes (0-241 bytes, must match what was used during signing).
+        version: Hybrid-DSA wire-format version. Unsupported versions fail
+             closed and return ``False``.
 
     Returns:
         True only if both Ed25519 AND ML-DSA-65 verify.
@@ -240,6 +284,10 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
 
     if len(ctx) > 255:
         return False
+    try:
+        version = normalize_hybrid_dsa_version(version)
+    except (TypeError, ValueError):
+        return False
 
     ed_sig = sig_bytes[:_ED25519_SIG]
     ml_sig = sig_bytes[_ED25519_SIG:]
@@ -247,6 +295,15 @@ def hybrid_dsa_verify(message, sig_bytes, pk_bytes, ctx=b""):
     ml_pk = pk_bytes[_ED25519_PK:]
 
     # Both must verify — always evaluate both (no short-circuit on first failure)
-    ed_ok = ed25519_verify(_ed25519_message(message, ctx), ed_sig, ed_pk)
-    ml_ok = ml_verify(_ml_dsa_message(message, ctx), ml_sig, ml_pk, ctx=b"")
+    ed_ok = ed25519_verify(
+        _ed25519_message(message, ctx, version=version),
+        ed_sig,
+        ed_pk,
+    )
+    ml_ok = ml_verify(
+        _ml_dsa_message(message, ctx, version=version),
+        ml_sig,
+        ml_pk,
+        ctx=b"",
+    )
     return ed_ok and ml_ok

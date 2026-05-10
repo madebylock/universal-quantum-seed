@@ -1243,13 +1243,19 @@ class TestHybridDSA(unittest.TestCase):
         from crypto.hybrid_dsa import (
             hybrid_dsa_keygen, hybrid_dsa_sign, hybrid_dsa_verify,
             HYBRID_DSA_SK_SIZE, HYBRID_DSA_PK_SIZE, HYBRID_DSA_SIG_SIZE,
+            HYBRID_DSA_VERSION, SUPPORTED_HYBRID_DSA_VERSIONS,
+            normalize_hybrid_dsa_version, get_supported_hybrid_dsa_versions,
         )
         cls.keygen = staticmethod(hybrid_dsa_keygen)
         cls.sign = staticmethod(hybrid_dsa_sign)
         cls.verify = staticmethod(hybrid_dsa_verify)
+        cls.normalize_version = staticmethod(normalize_hybrid_dsa_version)
+        cls.get_supported_versions = staticmethod(get_supported_hybrid_dsa_versions)
         cls.SK_SIZE = HYBRID_DSA_SK_SIZE
         cls.PK_SIZE = HYBRID_DSA_PK_SIZE
         cls.SIG_SIZE = HYBRID_DSA_SIG_SIZE
+        cls.VERSION = HYBRID_DSA_VERSION
+        cls.SUPPORTED_VERSIONS = SUPPORTED_HYBRID_DSA_VERSIONS
         seed = hashlib.sha512(b"test-hybrid-dsa").digest()
         cls.sk, cls.pk = hybrid_dsa_keygen(seed)
         cls.seed = seed
@@ -1267,6 +1273,25 @@ class TestHybridDSA(unittest.TestCase):
         sig = self.sign(b"msg", self.sk, ctx=b"backup")
         self.assertTrue(self.verify(b"msg", sig, self.pk, ctx=b"backup"))
         self.assertFalse(self.verify(b"msg", sig, self.pk, ctx=b"wrong"))
+
+    def test_version_negotiation_preserves_v1(self):
+        self.assertEqual(self.VERSION, 1)
+        self.assertEqual(self.SUPPORTED_VERSIONS, (1,))
+        self.assertEqual(self.get_supported_versions(), (1,))
+        self.assertEqual(self.normalize_version("v1"), 1)
+        sig_default = self.sign(b"versioned", self.sk, ctx=b"backup")
+        sig_v1 = self.sign(b"versioned", self.sk, ctx=b"backup", version=1)
+        self.assertTrue(
+            self.verify(b"versioned", sig_default, self.pk, ctx=b"backup")
+        )
+        self.assertTrue(
+            self.verify(b"versioned", sig_v1, self.pk, ctx=b"backup", version="v1")
+        )
+        self.assertFalse(
+            self.verify(b"versioned", sig_v1, self.pk, ctx=b"backup", version=2)
+        )
+        with self.assertRaises(ValueError):
+            self.sign(b"versioned", self.sk, ctx=b"backup", version=2)
 
     def test_tamper_ed25519(self):
         sig = self.sign(b"msg", self.sk)
