@@ -1456,6 +1456,18 @@ class TestQuantumSeed(unittest.TestCase):
         s = self.get_quantum_seed(self.master_key, "ml-dsa-65", _word_count=36)
         self.assertEqual(len(s), 32)
 
+    def test_uqs_v1_version_negotiation_preserves_default_seed(self):
+        import seed
+
+        words = seed.generate_words()
+
+        self.assertEqual(seed.get_supported_versions(), (1,))
+        self.assertEqual(seed.normalize_seed_version("v1"), 1)
+        self.assertTrue(seed.validate_seed(words))
+        self.assertEqual(seed.get_seed(words), seed.get_seed(words, version=1))
+        with self.assertRaises(ValueError):
+            seed.get_seed(words, version=2)
+
 
 class TestWordlistIntegrity(unittest.TestCase):
     """Wordlist integrity hash behavior."""
