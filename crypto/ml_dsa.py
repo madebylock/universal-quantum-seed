@@ -107,6 +107,9 @@ _N = 256              # Polynomial degree
 _D = 13               # Dropped bits from t
 _K = 6                # Rows in matrix A (module dimension)
 _L = 5                # Columns in matrix A
+_EXPAND_MASK_BITS_PER_COEFF = 20
+_EXPAND_MASK_SEED_BYTES = 5 * _N // 2
+_EXPAND_MASK_LAST_BYTE_IDX = ((_N - 1) * _EXPAND_MASK_BITS_PER_COEFF) // 8
 _ETA = 4              # Secret key coefficient bound
 _TAU = 49             # Challenge polynomial weight (number of ±1)
 _BETA = _TAU * _ETA   # = 196 — FIPS 204 Table 1: beta for ML-DSA-65
@@ -416,16 +419,17 @@ def _expand_mask(rho_prime, kappa):
 
     Algorithm 34, FIPS 204. Coefficients in [-gamma1+1, gamma1].
     """
+    assert _EXPAND_MASK_LAST_BYTE_IDX + 2 < _EXPAND_MASK_SEED_BYTES
     y = []
     # gamma1 = 2^19, so need 20 bits per coefficient
     for j in range(_L):
         seed_bytes = hashlib.shake_256(
             rho_prime + struct.pack("<H", kappa + j)
-        ).digest(5 * _N // 2)  # 20 bits * 256 / 8 = 640 bytes
+        ).digest(_EXPAND_MASK_SEED_BYTES)
         coeffs = []
         for i in range(_N):
             # Extract 20-bit value
-            bit_offset = i * 20
+            bit_offset = i * _EXPAND_MASK_BITS_PER_COEFF
             byte_idx = bit_offset // 8
             bit_shift = bit_offset % 8
             val = (seed_bytes[byte_idx] | (seed_bytes[byte_idx + 1] << 8) |
