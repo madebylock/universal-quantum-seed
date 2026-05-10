@@ -34,6 +34,9 @@ Limitations:
       interpreter, so they are skipped. Private keys should never be this small.
     - Copies may exist in CPU registers, compiler temporaries, or Python's internal
       free lists. This eliminates the primary threat (long-lived heap objects).
+    - Immutable objects are wiped only when their refcount indicates there are
+      no aliases beyond the active call path.  Shared/interned/cached objects
+      are skipped instead of corrupting unrelated runtime state.
     - Objects must not be referenced elsewhere after wiping — the object becomes
       a zeroed husk that will crash or return wrong values if used again.
 """
@@ -48,7 +51,7 @@ _IS_CPYTHON = hasattr(sys, "getrefcount")
 _INT_HEADER = 0
 _BYTES_HEADER = (sys.getsizeof(b"") - 1) if _IS_CPYTHON else 0  # -1 for null terminator
 
-# Refcount ceiling: skip objects likely interned/cached by the runtime.
+# Refcount ceiling: skip immutable objects likely interned/cached by the runtime.
 # getrefcount(obj) itself adds 1, the caller's variable adds 1, and
 # wipe()'s parameter adds 1 = 3 baseline.  Allow 1 extra for transient
 # references (e.g., passed through a wrapper).  Anything above 4 almost
@@ -131,6 +134,13 @@ def wipe(obj) -> bool:
         if -5 <= obj <= 256:
             return False
         _require_immutable_wipe_supported("int")
+        refcount = sys.getrefcount(obj)
+        if refcount > _REFCOUNT_MAX:
+            import logging
+            logging.getLogger(__name__).debug(
+                "wipe(): int object has refcount %d > %d, cannot wipe safely",
+                refcount, _REFCOUNT_MAX)
+            return False
         size = sys.getsizeof(obj) - _INT_HEADER
         if size > 0:
             ctypes.memset(id(obj) + _INT_HEADER, 0, size)
@@ -141,11 +151,12 @@ def wipe(obj) -> bool:
         if len(obj) <= 1:
             return False
         _require_immutable_wipe_supported("bytes")
-        if sys.getrefcount(obj) > _REFCOUNT_MAX:
+        refcount = sys.getrefcount(obj)
+        if refcount > _REFCOUNT_MAX:
             import logging
             logging.getLogger(__name__).debug(
                 "wipe(): bytes object (len=%d) has refcount %d > %d, cannot wipe safely",
-                len(obj), sys.getrefcount(obj), _REFCOUNT_MAX)
+                len(obj), refcount, _REFCOUNT_MAX)
             return False
         ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
         return True
@@ -154,6 +165,13 @@ def wipe(obj) -> bool:
         if not obj:
             return False
         _require_immutable_wipe_supported("str")
+        refcount = sys.getrefcount(obj)
+        if refcount > _REFCOUNT_MAX:
+            import logging
+            logging.getLogger(__name__).debug(
+                "wipe(): str object (len=%d) has refcount %d > %d, cannot wipe safely",
+                len(obj), refcount, _REFCOUNT_MAX)
+            return False
         data_bytes = sys.getsizeof(obj) - sys.getsizeof("")
         if data_bytes > 0:
             ctypes.memset(id(obj) + sys.getsizeof(""), 0, data_bytes)
