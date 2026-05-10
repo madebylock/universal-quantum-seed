@@ -167,6 +167,9 @@ def canonical_word(index, language=None) -> str:
 # Domain separator — ensures keys from this system can never collide
 # with keys derived by other systems using the same hash functions.
 _DOMAIN = b"universal-seed-v1"
+UQS_VERSION = 1
+SUPPORTED_UQS_VERSIONS = (UQS_VERSION,)
+_VERSION_DOMAINS = {UQS_VERSION: _DOMAIN}
 
 # UQS v1 derivation compatibility boundary:
 # Keep these parameters stable for v1. Raising _ARGON2_MEMORY changes the
@@ -181,6 +184,43 @@ _ARGON2_HASHLEN = 64     # output bytes
 
 # PBKDF2 parameters — first stage of chained KDF
 _PBKDF2_ITERATIONS = 600_000
+
+
+def normalize_seed_version(version=UQS_VERSION) -> int:
+    """Return a supported UQS seed-format version.
+
+    UQS v1 is locked by published KATs. Future formats must be added as
+    separate versions; they must not mutate this v1 domain or KDF contract.
+    """
+    if version is None or version == "":
+        return UQS_VERSION
+    if isinstance(version, str):
+        value = version.strip().lower()
+        if value.startswith("uqs-"):
+            value = value[4:]
+        if value.startswith("v"):
+            value = value[1:]
+        if not value.isdigit():
+            raise ValueError(f"unsupported UQS seed version: {version!r}")
+        version_i = int(value, 10)
+    else:
+        try:
+            version_i = int(version)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"unsupported UQS seed version: {version!r}") from exc
+    if version_i not in _VERSION_DOMAINS:
+        raise ValueError(f"unsupported UQS seed version: {version!r}")
+    return version_i
+
+
+def get_supported_versions() -> tuple[int, ...]:
+    """Return UQS seed-format versions supported by this implementation."""
+    return SUPPORTED_UQS_VERSIONS
+
+
+def _domain_for_version(version=UQS_VERSION) -> bytes:
+    return _VERSION_DOMAINS[normalize_seed_version(version)]
 
 # ── Word lookup data ──────────────────────────────────────────────
 try:
@@ -895,18 +935,19 @@ def generate_seed(word_count=36, extra_entropy=None, language=None):
     ]
 
 
-def _compute_checksum(indexes):
+def _compute_checksum(indexes, *, version=UQS_VERSION):
     """Compute 2 checksum indexes from a list of random seed indexes."""
     # Intentional: this checksum detects transcription mistakes; it is not an
     # authenticity check. Two 8-bit words give 16 bits of error detection,
     # stronger than BIP39's 24-word checksum, while preserving the seed format.
     # Widening it would remove entropy words and break existing seed recovery
     # unless introduced as a separate versioned format.
-    digest = hmac.new(_DOMAIN + b"-checksum", bytes(indexes), hashlib.sha256).digest()
+    domain = _domain_for_version(version)
+    digest = hmac.new(domain + b"-checksum", bytes(indexes), hashlib.sha256).digest()
     return [digest[0], digest[1]]
 
 
-def verify_checksum(seed):
+def verify_checksum(seed, *, version=UQS_VERSION):
     """Verify the last 2 words are valid checksum words.
 
     Args:
@@ -919,14 +960,14 @@ def verify_checksum(seed):
     if len(indexes) not in (24, 36):
         return False
     data = indexes[:-2]
-    expected = _compute_checksum(data)
+    expected = _compute_checksum(data, version=version)
     return hmac.compare_digest(bytes(indexes[-2:]), bytes(expected))
 
 
-def validate_seed(seed) -> bool:
+def validate_seed(seed, *, version=UQS_VERSION) -> bool:
     """Compatibility wrapper returning whether a UQS phrase is checksum-valid."""
     try:
-        return verify_checksum(seed)
+        return verify_checksum(seed, version=version)
     except Exception:
         return False
 
@@ -942,7 +983,7 @@ def _hkdf_expand(prk, info, length):
     return okm[:length]
 
 
-def _stretch(prk):
+def _stretch(prk, *, version=UQS_VERSION):
     """Chained key stretching: PBKDF2-SHA512 → Argon2id (defense in depth).
 
     Two independent KDFs run in series — the output of PBKDF2 feeds into
@@ -950,7 +991,8 @@ def _stretch(prk):
     - PBKDF2:   600,000 rounds of SHA-512 ≈ 1 sec per guess
     - Argon2id: 64 MiB memory × 3 iterations × 4 lanes ≈ 1 sec per guess
     """
-    salt = _DOMAIN + b"-stretch"
+    domain = _domain_for_version(version)
+    salt = domain + b"-stretch"
 
     # Stage 1: PBKDF2-SHA512
     stage1 = b""
@@ -1016,7 +1058,7 @@ def _passphrase_to_bytes(passphrase) -> bytes:
     return unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 
 
-def _build_seed_payload(indexes, passphrase="") -> bytes:
+def _build_seed_payload(indexes, passphrase="", *, version=UQS_VERSION) -> bytes:
     """Build the length-prefixed, domain-separated UQS v1 seed payload.
 
     Layout: domain + word-count (uint16 LE) + per-position (pos, idx) pairs
@@ -1024,8 +1066,9 @@ def _build_seed_payload(indexes, passphrase="") -> bytes:
     Each field is length- or domain-tagged so the boundary between the index
     region and the passphrase is unambiguous (prevents cross-length collisions).
     """
+    domain = _domain_for_version(version)
     passphrase_bytes = _passphrase_to_bytes(passphrase)
-    payload = bytearray(_DOMAIN + b"-seed-payload-v1")
+    payload = bytearray(domain + b"-seed-payload-v1")
     payload.extend(struct.pack("<H", len(indexes)))
     for pos, idx in enumerate(indexes):
         payload.extend(struct.pack("<BB", pos, idx))
@@ -1035,7 +1078,7 @@ def _build_seed_payload(indexes, passphrase="") -> bytes:
     return bytes(payload)
 
 
-def get_seed(words, passphrase=""):
+def get_seed(words, passphrase="", *, version=UQS_VERSION):
     """Derive a 64-byte master seed from words + optional passphrase.
 
     Only the data words (first 22 or 34) enter the KDF — the 2 checksum
@@ -1063,6 +1106,8 @@ def get_seed(words, passphrase=""):
     Args:
         words: List of icon indexes (ints 0-255) or words (strings in any language).
         passphrase: Optional passphrase string (second factor).
+        version: UQS seed-format version. Only v1 is supported in this
+            implementation; future versions must preserve v1 unchanged.
 
     Returns:
         64 bytes of derived seed material.
@@ -1070,27 +1115,31 @@ def get_seed(words, passphrase=""):
     Raises:
         ValueError: If the word count is invalid or checksum fails.
     """
+    domain = _domain_for_version(version)
     indexes = _to_indexes(words)
 
     # Step 0: Enforce valid length and verify checksum
     if len(indexes) not in (24, 36):
         raise ValueError(f"seed must be 24 or 36 words, got {len(indexes)}")
     data = indexes[:-2]
-    if not hmac.compare_digest(bytes(indexes[-2:]), bytes(_compute_checksum(data))):
+    if not hmac.compare_digest(
+        bytes(indexes[-2:]),
+        bytes(_compute_checksum(data, version=version)),
+    ):
         raise ValueError("invalid seed checksum")
     indexes = data
 
     # Step 1-2: Build a versioned, position-tagged, length-prefixed payload.
-    payload = _build_seed_payload(indexes, passphrase)
+    payload = _build_seed_payload(indexes, passphrase, version=version)
 
     # Step 3: HKDF-Extract — collapse payload + passphrase into fixed PRK
-    prk = hmac.new(_DOMAIN, payload, hashlib.sha512).digest()
+    prk = hmac.new(domain, payload, hashlib.sha512).digest()
 
     # Step 4: Chained KDF stretching (PBKDF2 → Argon2id)
-    stretched = _stretch(prk)
+    stretched = _stretch(prk, version=version)
 
     # Step 5: HKDF-Expand — derive output seed with domain separation
-    return _hkdf_expand(stretched, _DOMAIN + b"-master", 64)
+    return _hkdf_expand(stretched, domain + b"-master", 64)
 
 
 def get_profile(master_key, profile_password):

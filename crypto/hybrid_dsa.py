@@ -136,10 +136,21 @@ def hybrid_dsa_keygen(seed):
     if len(seed) != 64:
         raise ValueError(f"Hybrid DSA seed must be 64 bytes, got {len(seed)}")
 
-    ed_sk, ed_pk = ed25519_keygen(seed[:32])
-    ml_sk, ml_pk = ml_keygen(seed[32:])
+    seed_view = memoryview(seed)
+    ed_seed = bytearray(seed_view[:32])
+    ml_seed = bytearray(seed_view[32:])
+    _mlock(ed_seed)
+    _mlock(ml_seed)
+    try:
+        ed_sk, ed_pk = ed25519_keygen(ed_seed)
+        ml_sk, ml_pk = ml_keygen(ml_seed)
 
-    return ed_sk + ml_sk, ed_pk + ml_pk
+        return ed_sk + ml_sk, ed_pk + ml_pk
+    finally:
+        _munlock(ed_seed)
+        _secure_zero(ed_seed)
+        _munlock(ml_seed)
+        _secure_zero(ml_seed)
 
 
 def hybrid_dsa_sign(message, sk_bytes, ctx=b""):

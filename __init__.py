@@ -60,6 +60,10 @@ try:
         kdf_info,
         get_languages,
         canonical_word,
+        normalize_seed_version,
+        get_supported_versions,
+        UQS_VERSION,
+        SUPPORTED_UQS_VERSIONS,
         DARK_VISUALS,
     )
 except ImportError:
@@ -82,6 +86,10 @@ except ImportError:
         kdf_info,
         get_languages,
         canonical_word,
+        normalize_seed_version,
+        get_supported_versions,
+        UQS_VERSION,
+        SUPPORTED_UQS_VERSIONS,
         DARK_VISUALS,
     )
 
@@ -104,5 +112,9 @@ __all__ = [
     "kdf_info",
     "get_languages",
     "canonical_word",
+    "normalize_seed_version",
+    "get_supported_versions",
+    "UQS_VERSION",
+    "SUPPORTED_UQS_VERSIONS",
     "DARK_VISUALS",
 ]

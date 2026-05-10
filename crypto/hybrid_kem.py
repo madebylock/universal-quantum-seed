@@ -145,12 +145,23 @@ def hybrid_kem_keygen(seed):
     if len(seed) != 96:
         raise ValueError(f"Hybrid KEM seed must be 96 bytes, got {len(seed)}")
 
-    x_sk, x_pk = x25519_keygen(seed[:32])
-    ml_ek, ml_dk = ml_kem_keygen(seed[32:])
+    seed_view = memoryview(seed)
+    x_seed = bytearray(seed_view[:32])
+    ml_seed = bytearray(seed_view[32:])
+    _mlock(x_seed)
+    _mlock(ml_seed)
+    try:
+        x_sk, x_pk = x25519_keygen(x_seed)
+        ml_ek, ml_dk = ml_kem_keygen(ml_seed)
 
-    ek = x_pk + ml_ek
-    dk = x_sk + ml_dk
-    return ek, dk
+        ek = x_pk + ml_ek
+        dk = x_sk + ml_dk
+        return ek, dk
+    finally:
+        _munlock(x_seed)
+        _secure_zero(x_seed)
+        _munlock(ml_seed)
+        _secure_zero(ml_seed)
 
 
 def hybrid_kem_encaps(ek, randomness=None):

@@ -390,6 +390,17 @@ def ed25519_keygen(seed):
     if len(seed) != 32:
         raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
 
+    if _HAS_NACL:
+        if _HAS_SODIUM and isinstance(seed, (bytearray, memoryview)):
+            pk = _ffi.new("unsigned char[]", 32)
+            sk = _ffi.new("unsigned char[]", 64)
+            rc = _lib.crypto_sign_seed_keypair(pk, sk, _ffi.from_buffer(seed))
+            if rc != 0:
+                raise ValueError("Ed25519 key generation failed")
+            return bytes(_ffi.buffer(sk, 64)), bytes(_ffi.buffer(pk, 32))
+        pk, sk = nacl.bindings.crypto_sign_seed_keypair(seed)
+        return sk, pk
+
     pk_bytes = _public_key_from_seed(seed)
     return seed + pk_bytes, pk_bytes
 
