@@ -50,6 +50,7 @@ _IS_CPYTHON = hasattr(sys, "getrefcount")
 # Pre-compute data offsets (stable across a single CPython version)
 _INT_HEADER = 0
 _BYTES_HEADER = (sys.getsizeof(b"") - 1) if _IS_CPYTHON else 0  # -1 for null terminator
+_STR_HEADER = 0
 
 # Refcount ceiling: skip immutable objects likely interned/cached by the runtime.
 # getrefcount(obj) itself adds 1, the caller's variable adds 1, and
@@ -84,8 +85,25 @@ if _IS_CPYTHON:
                 _canary_bytes = bytes(b"\xab\xcd\xef")
                 ctypes.memset(id(_canary_bytes) + _BYTES_HEADER, 0, len(_canary_bytes))
                 if _canary_bytes == b"\x00\x00\x00":
-                    _LAYOUT_OK = True
-        del _canary_int, _canary_bytes, _ci_size, _int_mem, _digit_offset
+                    _canary_str = "".join(["LockStr", "Canary"])
+                    _str_mem = ctypes.string_at(
+                        id(_canary_str), sys.getsizeof(_canary_str))
+                    _str_offset = _str_mem.find(b"LockStrCanary")
+                    if _str_offset < 0:
+                        raise RuntimeError(
+                            "could not locate PyUnicode data offset")
+                    _STR_HEADER = _str_offset
+                    ctypes.memset(
+                        id(_canary_str) + _STR_HEADER,
+                        0,
+                        len(_canary_str),
+                    )
+                    if _canary_str == "\x00" * len("LockStrCanary"):
+                        _LAYOUT_OK = True
+        del (
+            _canary_int, _canary_bytes, _canary_str, _ci_size, _int_mem,
+            _digit_offset, _str_mem, _str_offset,
+        )
     except Exception:
         _LAYOUT_OK = False
 
@@ -106,6 +124,19 @@ def _require_immutable_wipe_supported(kind: str) -> None:
     raise SecureWipeUnsupportedError(
         f"secure wipe for {kind} requires a validated CPython memory layout; "
         f"current runtime/layout is unsupported ({runtime})"
+    )
+
+
+def _log_refcount_skip(kind: str, obj, refcount: int) -> None:
+    import logging
+    try:
+        size = len(obj)
+    except Exception:
+        size = sys.getsizeof(obj)
+    logging.getLogger(__name__).warning(
+        "wipe(): %s object (size=%s) has refcount %d > %d; "
+        "skipping unsafe immutable wipe",
+        kind, size, refcount, _REFCOUNT_MAX,
     )
 
 
@@ -136,10 +167,7 @@ def wipe(obj) -> bool:
         _require_immutable_wipe_supported("int")
         refcount = sys.getrefcount(obj)
         if refcount > _REFCOUNT_MAX:
-            import logging
-            logging.getLogger(__name__).debug(
-                "wipe(): int object has refcount %d > %d, cannot wipe safely",
-                refcount, _REFCOUNT_MAX)
+            _log_refcount_skip("int", obj, refcount)
             return False
         size = sys.getsizeof(obj) - _INT_HEADER
         if size > 0:
@@ -153,10 +181,7 @@ def wipe(obj) -> bool:
         _require_immutable_wipe_supported("bytes")
         refcount = sys.getrefcount(obj)
         if refcount > _REFCOUNT_MAX:
-            import logging
-            logging.getLogger(__name__).debug(
-                "wipe(): bytes object (len=%d) has refcount %d > %d, cannot wipe safely",
-                len(obj), refcount, _REFCOUNT_MAX)
+            _log_refcount_skip("bytes", obj, refcount)
             return False
         ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
         return True
@@ -164,17 +189,18 @@ def wipe(obj) -> bool:
     if isinstance(obj, str):
         if not obj:
             return False
+        if not obj.isascii():
+            raise SecureWipeUnsupportedError(
+                "secure wipe for str currently requires compact ASCII strings"
+            )
         _require_immutable_wipe_supported("str")
         refcount = sys.getrefcount(obj)
         if refcount > _REFCOUNT_MAX:
-            import logging
-            logging.getLogger(__name__).debug(
-                "wipe(): str object (len=%d) has refcount %d > %d, cannot wipe safely",
-                len(obj), refcount, _REFCOUNT_MAX)
+            _log_refcount_skip("str", obj, refcount)
             return False
-        data_bytes = sys.getsizeof(obj) - sys.getsizeof("")
+        data_bytes = len(obj)
         if data_bytes > 0:
-            ctypes.memset(id(obj) + sys.getsizeof(""), 0, data_bytes)
+            ctypes.memset(id(obj) + _STR_HEADER, 0, data_bytes)
             return True
         return False
 
