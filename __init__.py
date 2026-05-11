@@ -14,9 +14,16 @@ _TRUSTED_WORDLIST_SHA256 = (
 )
 
 
+class WordlistIntegrityError(ImportError):
+    """Raised when the bundled UQS wordlist fails its integrity check."""
+
+
 def _canonical_wordlist_bytes(data: bytes) -> bytes:
     # Git stores this generated Python wordlist as LF text, while some Windows
-    # checkouts expand it to CRLF. Hash the canonical repository form.
+    # checkouts expand it to CRLF. Some editors also add a UTF-8 BOM. Hash the
+    # canonical repository form so those text encodings do not break startup.
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
     return data.replace(b"\r\n", b"\n")
 
 
@@ -28,13 +35,13 @@ def _verify_wordlist_integrity():
     expected_line = digest_path.read_text(encoding="utf-8").strip()
     sidecar_expected = expected_line.split()[0].lower()
     if sidecar_expected != expected:
-        raise ImportError(
+        raise WordlistIntegrityError(
             "UQS wordlist integrity check failed: sidecar hash is not trusted")
     actual = hashlib.sha256(
         _canonical_wordlist_bytes(words_path.read_bytes())
     ).hexdigest()
     if actual.lower() != expected:
-        raise ImportError(
+        raise WordlistIntegrityError(
             "UQS wordlist integrity check failed: words.py hash mismatch")
 
 
@@ -117,4 +124,5 @@ __all__ = [
     "UQS_VERSION",
     "SUPPORTED_UQS_VERSIONS",
     "DARK_VISUALS",
+    "WordlistIntegrityError",
 ]
