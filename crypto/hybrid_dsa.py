@@ -93,6 +93,7 @@ _ML_DSA_SIG = 3309
 HYBRID_DSA_SK_SIZE = _ED25519_SK + _ML_DSA_SK    # 4,096
 HYBRID_DSA_PK_SIZE = _ED25519_PK + _ML_DSA_PK    # 1,984
 HYBRID_DSA_SIG_SIZE = _ED25519_SIG + _ML_DSA_SIG  # 3,373
+HYBRID_DSA_COMPONENT_ALGORITHMS = ("Ed25519", "ML-DSA-65")
 
 # Domain prefix to prevent signature stripping attacks
 _DOMAIN = b"hybrid-dsa-v1"
