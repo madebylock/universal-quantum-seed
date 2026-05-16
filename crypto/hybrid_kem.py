@@ -102,17 +102,49 @@ _ML_KEM_CT = ML_KEM_CT_SIZE
 HYBRID_KEM_EK_SIZE = _X25519_PK + _ML_KEM_EK    # 1,216
 HYBRID_KEM_DK_SIZE = _X25519_SK + _ML_KEM_DK    # 2,432
 HYBRID_KEM_CT_SIZE = _X25519_PK + _ML_KEM_CT    # 1,120
+HYBRID_KEM_VERSION = 1
+SUPPORTED_HYBRID_KEM_VERSIONS = (HYBRID_KEM_VERSION,)
+_VERSION_DOMAINS = {
+    HYBRID_KEM_VERSION: b"hybrid-kem-v1",
+}
+
+
+def normalize_hybrid_kem_version(version=HYBRID_KEM_VERSION) -> int:
+    """Normalize and validate a hybrid-KEM wire-format version."""
+    if version is None or version == "":
+        return HYBRID_KEM_VERSION
+    if isinstance(version, str):
+        raw = version.strip().lower()
+        if raw.startswith("v"):
+            raw = raw[1:]
+        if not raw.isdigit():
+            raise ValueError(f"Unsupported hybrid KEM version: {version!r}")
+        version_i = int(raw, 10)
+    else:
+        version_i = int(version)
+    if version_i not in _VERSION_DOMAINS:
+        raise ValueError(f"Unsupported hybrid KEM version: {version_i}")
+    return version_i
+
+
+def get_supported_hybrid_kem_versions() -> tuple[int, ...]:
+    """Return supported hybrid-KEM wire-format versions."""
+    return SUPPORTED_HYBRID_KEM_VERSIONS
+
+
+def _domain_for_version(version=HYBRID_KEM_VERSION) -> bytes:
+    return _VERSION_DOMAINS[normalize_hybrid_kem_version(version)]
 
 
 def _combine_secrets(x25519_ss, ml_kem_ss, x25519_ct, ml_kem_ct,
-                     x25519_pk, ml_kem_ek):
+                     x25519_pk, ml_kem_ek, *, version=HYBRID_KEM_VERSION):
     """Combine X25519 and ML-KEM shared secrets via HKDF.
 
     Uses ciphertext-bound and public-key-bound HKDF to produce the final
     32-byte shared secret:
         salt = SHA-256(x25519_ct || ml_kem_ct)
         PRK  = HMAC-SHA256(salt, x25519_ss || ml_kem_ss)    # HKDF-Extract
-        info = b"hybrid-kem-v1" || SHA-256(x25519_pk || ml_kem_ek) || 0x01
+        info = domain(version) || SHA-256(x25519_pk || ml_kem_ek) || 0x01
         SS   = HMAC-SHA256(PRK, info)                        # HKDF-Expand
 
     Binding:
@@ -120,12 +152,12 @@ def _combine_secrets(x25519_ss, ml_kem_ss, x25519_ct, ml_kem_ct,
       - Receiver public keys into the info prevents cross-context reuse: if the
         same ciphertext is decapsulated against a different recipient's key, the
         derived shared secret changes.  Cheap and makes audits easier.
-    The domain string "hybrid-kem-v1" provides separation from other protocols.
+    The versioned domain string provides separation from other protocols.
     """
     salt = hashlib.sha256(x25519_ct + ml_kem_ct).digest()
     prk = hmac.new(salt, x25519_ss + ml_kem_ss, hashlib.sha256).digest()
     pk_hash = hashlib.sha256(x25519_pk + ml_kem_ek).digest()
-    info = b"hybrid-kem-v1" + pk_hash + b"\x01"
+    info = _domain_for_version(version) + pk_hash + b"\x01"
     return hmac.new(prk, info, hashlib.sha256).digest()
 
 
@@ -164,7 +196,7 @@ def hybrid_kem_keygen(seed):
         _secure_zero(ml_seed)
 
 
-def hybrid_kem_encaps(ek, randomness=None):
+def hybrid_kem_encaps(ek, randomness=None, *, version=HYBRID_KEM_VERSION):
     """Encapsulate: produce hybrid ciphertext and combined shared secret.
 
     Performs X25519 ephemeral DH and ML-KEM-768 encapsulation, then
@@ -177,6 +209,8 @@ def hybrid_kem_encaps(ek, randomness=None):
         ek: 1,216-byte hybrid encapsulation key.
         randomness: 64 bytes (32B for X25519 ephemeral + 32B for ML-KEM).
                     If None, generates securely.
+        version: Hybrid-KEM wire-format version. Version 1 preserves the
+                 original ``hybrid-kem-v1`` HKDF domain.
 
     Returns:
         (ct, shared_secret) tuple.
@@ -187,6 +221,7 @@ def hybrid_kem_encaps(ek, randomness=None):
         raise ValueError(
             f"Hybrid KEM ek must be {HYBRID_KEM_EK_SIZE} bytes, got {len(ek)}"
         )
+    version = normalize_hybrid_kem_version(version)
 
     if randomness is None:
         x25519_randomness = os.urandom(32)
@@ -218,6 +253,7 @@ def hybrid_kem_encaps(ek, randomness=None):
                 ss = _combine_secrets(
                     bytes(x_ss_buf), bytes(ml_ss_buf),
                     eph_pk, ml_ct, x_pk, ml_ek,
+                    version=version,
                 )
                 return ct, ss
             finally:
@@ -263,7 +299,7 @@ def _x25519_shared_or_fallback(x_sk, eph_pk, ct):
     return _ct_select_bytes(acc != 0, result, fallback)
 
 
-def hybrid_kem_decaps(dk, ct):
+def hybrid_kem_decaps(dk, ct, *, version=HYBRID_KEM_VERSION):
     """Decapsulate: recover combined shared secret from hybrid ciphertext.
 
     Uses implicit rejection for both components:
@@ -277,6 +313,8 @@ def hybrid_kem_decaps(dk, ct):
     Args:
         dk: 2,432-byte hybrid decapsulation key.
         ct: 1,120-byte hybrid ciphertext.
+        version: Hybrid-KEM wire-format version. Version 1 preserves the
+                 original ``hybrid-kem-v1`` HKDF domain.
 
     Returns:
         32-byte combined shared secret.
@@ -289,6 +327,7 @@ def hybrid_kem_decaps(dk, ct):
         raise ValueError(
             f"Hybrid KEM ct must be {HYBRID_KEM_CT_SIZE} bytes, got {len(ct)}"
         )
+    version = normalize_hybrid_kem_version(version)
 
     # Copy secret key into mutable buffer for secure wiping
     dk_buf = bytearray(dk)
@@ -315,6 +354,7 @@ def hybrid_kem_decaps(dk, ct):
                 return _combine_secrets(
                     bytes(x_ss_buf), bytes(ml_ss_buf),
                     eph_pk, ml_ct, x_pk, ml_ek,
+                    version=version,
                 )
             finally:
                 _munlock(ml_ss_buf)
