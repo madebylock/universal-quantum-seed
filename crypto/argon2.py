@@ -395,6 +395,8 @@ def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
         raise ValueError("hash_len must be >= 4")
     if len(salt) < 8:
         raise ValueError("salt must be >= 8 bytes")
+    if bytes(salt) == b"\x00" * len(salt):
+        raise ValueError("salt cannot be all zeros")
 
     p = parallelism
     m = memory_cost
@@ -507,6 +509,22 @@ except ImportError:
 BACKEND = "cffi" if _HAS_CFFI else "pure"
 
 
+def _salt_bytes(salt) -> bytes:
+    """Validate and normalize an Argon2 salt to bytes.
+
+    Enforces RFC 9106 §3.1: salt must be bytes-like, at least 8 bytes,
+    and not all-zero (an all-zero salt defeats per-user randomization).
+    """
+    if not isinstance(salt, (bytes, bytearray, memoryview)):
+        raise ValueError("salt must be bytes-like")
+    data = bytes(memoryview(salt).cast("B"))
+    if len(data) < 8:
+        raise ValueError("salt must be at least 8 bytes")
+    if data == b"\x00" * len(data):
+        raise ValueError("salt cannot be all zeros")
+    return data
+
+
 def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
                     hash_len, type):
     """Argon2 KDF — compatible with argon2.low_level.hash_secret_raw.
@@ -522,6 +540,7 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
     """
     if memory_cost > 4194304:
         raise ValueError("memory_cost must be <= 4194304 (4 GiB)")
+    salt = _salt_bytes(salt)
 
     if (
         _cffi_lib is not None

@@ -206,6 +206,8 @@ def _inc_ctr(ctr: bytearray) -> None:
 
 # NIST SP 800-38D maximum: 2^39 - 256 bits = (2^36 - 32) bytes
 _MAX_PLAINTEXT_BYTES = (1 << 36) - 32
+# NIST SP 800-38D §5.2.1.1: AAD is bounded by 2^64 bits = 2^61 bytes minus one
+_MAX_AAD_BYTES = (1 << 61) - 1
 
 
 
@@ -246,6 +248,10 @@ def aes_gcm_encrypt(
         raise ValueError(
             f"Plaintext ({len(plaintext)} bytes) exceeds NIST SP 800-38D "
             f"maximum ({_MAX_PLAINTEXT_BYTES} bytes)")
+    if len(aad) > _MAX_AAD_BYTES:
+        raise ValueError(
+            f"AAD ({len(aad)} bytes) exceeds NIST SP 800-38D "
+            f"maximum ({_MAX_AAD_BYTES} bytes)")
 
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
@@ -328,6 +334,10 @@ def aes_gcm_decrypt(
         raise ValueError(
             f"Ciphertext ({len(ciphertext) - 16} bytes payload) exceeds "
             f"NIST SP 800-38D maximum ({_MAX_PLAINTEXT_BYTES} bytes)")
+    if len(aad) > _MAX_AAD_BYTES:
+        raise ValueError(
+            f"AAD ({len(aad)} bytes) exceeds NIST SP 800-38D "
+            f"maximum ({_MAX_AAD_BYTES} bytes)")
 
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
