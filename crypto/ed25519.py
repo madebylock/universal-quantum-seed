@@ -425,6 +425,11 @@ def _public_key_from_seed(seed):
         _secure_zero(h_buf)
 
 
+def public_key_from_seed(seed):
+    """Public wrapper for deriving an RFC 8032 Ed25519 public key from seed."""
+    return _public_key_from_seed(seed)
+
+
 def ed25519_sign(message, sk_bytes):
     """Sign a message with Ed25519 (RFC 8032 Section 5.1.6).
 
