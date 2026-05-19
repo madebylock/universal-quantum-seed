@@ -172,18 +172,25 @@ SUPPORTED_UQS_VERSIONS = (UQS_VERSION,)
 _VERSION_DOMAINS = {UQS_VERSION: _DOMAIN}
 
 # UQS v1 derivation compatibility boundary:
-# Keep these parameters stable for v1. Raising _ARGON2_MEMORY changes the
+# Keep these parameters stable for v1. Raising UQS_ARGON2_MEMORY_KIB changes the
 # deterministic master seed for every existing phrase. The 64 MiB, t=3, p=4
 # profile matches RFC 9106's memory-constrained Argon2id recommendation and is
 # above OWASP's minimum guidance; heavier profiles must be introduced only as a
 # versioned UQS v2 KDF.
-_ARGON2_TIME = 3         # iterations
-_ARGON2_MEMORY = 65536   # 64 MiB
-_ARGON2_PARALLEL = 4     # lanes
-_ARGON2_HASHLEN = 64     # output bytes
+UQS_ARGON2_TIME_COST = 3         # iterations
+UQS_ARGON2_MEMORY_KIB = 65536    # 64 MiB
+UQS_ARGON2_PARALLELISM = 4       # lanes
+UQS_ARGON2_HASH_LENGTH = 64      # output bytes
 
 # PBKDF2 parameters — first stage of chained KDF
-_PBKDF2_ITERATIONS = 600_000
+UQS_PBKDF2_ITERATIONS = 600_000
+
+# Backward-compat private aliases for internal callers.
+_ARGON2_TIME = UQS_ARGON2_TIME_COST
+_ARGON2_MEMORY = UQS_ARGON2_MEMORY_KIB
+_ARGON2_PARALLEL = UQS_ARGON2_PARALLELISM
+_ARGON2_HASHLEN = UQS_ARGON2_HASH_LENGTH
+_PBKDF2_ITERATIONS = UQS_PBKDF2_ITERATIONS
 
 
 def normalize_seed_version(version=UQS_VERSION) -> int:

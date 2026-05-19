@@ -58,6 +58,10 @@ _STR_HEADER = 0
 # references (e.g., passed through a wrapper).  Anything above 4 almost
 # certainly means the runtime has cached/interned the object.
 _REFCOUNT_MAX = 4
+# wipe_all() adds the argument tuple and loop variable around _wipe()'s normal
+# parameter/getrefcount references.  A non-aliased caller-owned object reaches
+# 5; an additional caller alias reaches 6 and remains skipped.
+_WIPE_ALL_REFCOUNT_MAX = 5
 
 # ── Import-time layout validation ────────────────────────────────────
 #
@@ -127,21 +131,21 @@ def _require_immutable_wipe_supported(kind: str) -> None:
     )
 
 
-def _log_refcount_skip(kind: str, obj, refcount: int) -> None:
+def _log_refcount_skip(kind: str, obj, refcount: int, refcount_max: int) -> None:
     import logging
     try:
         size = len(obj)
     except Exception:
         size = sys.getsizeof(obj)
-    logging.getLogger(__name__).warning(
+    logging.getLogger(__name__).debug(
         "wipe(): %s object (size=%s) has refcount %d > %d; "
         "skipping unsafe immutable wipe",
-        kind, size, refcount, _REFCOUNT_MAX,
+        kind, size, refcount, refcount_max,
     )
 
 
-def wipe(obj) -> bool:
-    """Best-effort secure wipe of a Python int, bytes, bytearray, or str.
+def _wipe(obj, *, refcount_max: int) -> bool:
+    """Best-effort secure wipe with a caller-calibrated refcount ceiling.
 
     For bytearray: zeros every byte in-place (always works, any Python).
     For bytes: zeros the internal buffer via ctypes (CPython only).
@@ -166,8 +170,8 @@ def wipe(obj) -> bool:
             return False
         _require_immutable_wipe_supported("int")
         refcount = sys.getrefcount(obj)
-        if refcount > _REFCOUNT_MAX:
-            _log_refcount_skip("int", obj, refcount)
+        if refcount > refcount_max:
+            _log_refcount_skip("int", obj, refcount, refcount_max)
             return False
         size = sys.getsizeof(obj) - _INT_HEADER
         if size > 0:
@@ -180,8 +184,8 @@ def wipe(obj) -> bool:
             return False
         _require_immutable_wipe_supported("bytes")
         refcount = sys.getrefcount(obj)
-        if refcount > _REFCOUNT_MAX:
-            _log_refcount_skip("bytes", obj, refcount)
+        if refcount > refcount_max:
+            _log_refcount_skip("bytes", obj, refcount, refcount_max)
             return False
         ctypes.memset(id(obj) + _BYTES_HEADER, 0, len(obj))
         return True
@@ -195,8 +199,8 @@ def wipe(obj) -> bool:
             )
         _require_immutable_wipe_supported("str")
         refcount = sys.getrefcount(obj)
-        if refcount > _REFCOUNT_MAX:
-            _log_refcount_skip("str", obj, refcount)
+        if refcount > refcount_max:
+            _log_refcount_skip("str", obj, refcount, refcount_max)
             return False
         data_bytes = len(obj)
         if data_bytes > 0:
@@ -207,6 +211,17 @@ def wipe(obj) -> bool:
     return False
 
 
+def wipe(obj) -> bool:
+    """Best-effort secure wipe of a Python int, bytes, bytearray, or str.
+
+    Returns True if the object was wiped, False if skipped because it is empty,
+    cached, unsupported, or has no known wipe strategy.  Raises
+    SecureWipeUnsupportedError when asked to wipe an immutable secret on an
+    interpreter/layout where that cannot be done safely.
+    """
+    return _wipe(obj, refcount_max=_REFCOUNT_MAX)
+
+
 def wipe_all(*objs) -> None:
     """Wipe multiple objects. Convenience wrapper for finally blocks.
 
@@ -215,7 +230,7 @@ def wipe_all(*objs) -> None:
             wipe_all(scalar, key_bytes, seed_int, hex_str)
     """
     for obj in objs:
-        wipe(obj)
+        _wipe(obj, refcount_max=_WIPE_ALL_REFCOUNT_MAX)
 
 
 def wipe_list(lst) -> None:
