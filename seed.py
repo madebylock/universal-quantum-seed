@@ -1197,6 +1197,14 @@ _QUANTUM_SEED_SIZES = {
 }
 
 
+def _validate_quantum_key_index(key_index) -> int:
+    if isinstance(key_index, bool) or not isinstance(key_index, int):
+        raise ValueError("key_index must be an integer in [0, 4294967295]")
+    if not 0 <= key_index <= 0xFFFFFFFF:
+        raise ValueError("key_index must be an integer in [0, 4294967295]")
+    return key_index
+
+
 def get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0, _word_count=None):
     """Derive post-quantum seed material from a master key via HKDF-Expand.
 
@@ -1246,6 +1254,7 @@ def get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0, _word_count
             f"Unknown quantum algorithm: {algorithm!r}. "
             f"Supported: {', '.join(sorted(_QUANTUM_SEED_SIZES))}"
         )
+    key_index = _validate_quantum_key_index(key_index)
     info = _DOMAIN + b"-quantum-" + algorithm.encode("ascii") + struct.pack("<I", key_index)
     return _hkdf_expand(master_key, info, size)
 

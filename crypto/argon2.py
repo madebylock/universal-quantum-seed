@@ -526,7 +526,7 @@ def _salt_bytes(salt) -> bytes:
 
 
 def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
-                    hash_len, type):
+                    hash_len, type, *, return_bytearray: bool = False):
     """Argon2 KDF — compatible with argon2.low_level.hash_secret_raw.
 
     Uses the C library (argon2-cffi) when available, otherwise falls
@@ -537,6 +537,11 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
     directly via cffi.from_buffer() — no intermediate Python `bytes`
     copy is created, so a caller-side wipe of the original buffer
     actually clears the secret from memory.
+
+    When ``return_bytearray`` is True, returns a mutable ``bytearray``
+    instead of ``bytes`` so callers can zero the derived key after use.
+    The intermediate buffer (CFFI output or pure-Python bytes result)
+    is also wiped before this function returns.
     """
     if memory_cost > 4194304:
         raise ValueError("memory_cost must be <= 4194304 (4 GiB)")
@@ -567,14 +572,29 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
         )
         if rv != _cffi_lib.ARGON2_OK:
             raise _CffiHashingError(_cffi_error_to_str(rv))
-        return bytes(_cffi_ffi.buffer(out, hash_len))
+        try:
+            if return_bytearray:
+                return bytearray(_cffi_ffi.buffer(out, hash_len))
+            return bytes(_cffi_ffi.buffer(out, hash_len))
+        finally:
+            zero = _cffi_ffi.new("uint8_t[]", hash_len)
+            _cffi_ffi.memmove(out, zero, hash_len)
 
     if _cffi_hash is not None:
-        return _cffi_hash(
+        result = _cffi_hash(
             secret=secret, salt=salt, time_cost=time_cost,
             memory_cost=memory_cost, parallelism=parallelism,
             hash_len=hash_len, type=type,
         )
+        if return_bytearray:
+            try:
+                from .secure_wipe import wipe
+            except ImportError:
+                from secure_wipe import wipe  # type: ignore[no-redef]
+            mutable = bytearray(result)
+            wipe(result)
+            return mutable
+        return result
 
     # Map type enum to check it's Argon2id (only variant we support)
     type_val = type if isinstance(type, int) else getattr(type, "value", type)
@@ -582,4 +602,13 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
         raise ValueError(
             f"Pure Python backend only supports Argon2id (type=2), got {type_val}")
 
-    return argon2id(secret, salt, time_cost, memory_cost, parallelism, hash_len)
+    result = argon2id(secret, salt, time_cost, memory_cost, parallelism, hash_len)
+    if return_bytearray:
+        try:
+            from .secure_wipe import wipe
+        except ImportError:
+            from secure_wipe import wipe  # type: ignore[no-redef]
+        mutable = bytearray(result)
+        wipe(result)
+        return mutable
+    return result

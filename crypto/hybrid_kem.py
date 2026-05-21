@@ -102,6 +102,7 @@ _ML_KEM_CT = ML_KEM_CT_SIZE
 HYBRID_KEM_EK_SIZE = _X25519_PK + _ML_KEM_EK    # 1,216
 HYBRID_KEM_DK_SIZE = _X25519_SK + _ML_KEM_DK    # 2,432
 HYBRID_KEM_CT_SIZE = _X25519_PK + _ML_KEM_CT    # 1,120
+HYBRID_KEM_SEED_LEN = 96
 HYBRID_KEM_COMPONENT_ALGORITHMS = ("X25519", "ML-KEM-768")
 HYBRID_KEM_VERSION = 1
 SUPPORTED_HYBRID_KEM_VERSIONS = (HYBRID_KEM_VERSION,)
@@ -175,8 +176,10 @@ def hybrid_kem_keygen(seed):
         ek_bytes: 1,216-byte hybrid encapsulation key (public).
         dk_bytes: 2,432-byte hybrid decapsulation key (secret).
     """
-    if len(seed) != 96:
-        raise ValueError(f"Hybrid KEM seed must be 96 bytes, got {len(seed)}")
+    if len(seed) != HYBRID_KEM_SEED_LEN:
+        raise ValueError(
+            f"Hybrid KEM seed must be {HYBRID_KEM_SEED_LEN} bytes, got {len(seed)}"
+        )
 
     seed_view = memoryview(seed)
     x_seed = bytearray(seed_view[:32])
