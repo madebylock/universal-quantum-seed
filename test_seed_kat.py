@@ -48,10 +48,26 @@ def test_wordlist_integrity_hash_is_pinned_in_code():
     assert uqs._TRUSTED_WORDLIST_SHA256 == actual_hash
 
 
+def _canonical_json_bytes(data: bytes) -> bytes:
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def test_seed_v1_known_answer_vectors():
     kat_path = Path(__file__).with_name("kat") / "seed_v1.json"
-    kat = json.loads(kat_path.read_text(encoding="utf-8"))
+    sidecar_path = kat_path.with_suffix(kat_path.suffix + ".sha256")
+    kat_bytes = kat_path.read_bytes()
+    actual_hash = hashlib.sha256(_canonical_json_bytes(kat_bytes)).hexdigest()
+    sidecar_hash = sidecar_path.read_text(encoding="utf-8").split()[0].lower()
 
+    # Pinning the test vectors against drift: any future edit to
+    # seed_v1.json must also update the sidecar.
+    assert sidecar_hash == actual_hash, (
+        "KAT sidecar hash does not match seed_v1.json contents"
+    )
+
+    kat = json.loads(kat_bytes.decode("utf-8"))
     assert kat["version"] == 1
     assert kat["domain"] == "universal-seed-v1"
 
@@ -59,6 +75,12 @@ def test_seed_v1_known_answer_vectors():
         indexes = vector["indexes"]
 
         assert len(indexes) == vector["word_count"], vector["id"]
+        # Vectors flagged ``expect_invalid_checksum`` exist to lock the
+        # negative path of verify_checksum; they don't have derived seed
+        # material in the file.
+        if vector.get("expect_invalid_checksum"):
+            assert not verify_checksum(indexes), vector["id"]
+            continue
         assert verify_checksum(indexes), vector["id"]
 
         master = get_seed(indexes, vector["passphrase"])

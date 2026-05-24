@@ -980,14 +980,49 @@ def validate_seed(seed, *, version=UQS_VERSION) -> bool:
 
 
 def _hkdf_expand(prk, info, length):
-    """HKDF-Expand (RFC 5869) using HMAC-SHA512."""
+    """HKDF-Expand (RFC 5869) using HMAC-SHA512.
+
+    Returns a ``bytearray`` so callers can wipe it after consumption.
+    All intermediate buffers (``prev``, ``msg``) are wiped before the
+    next iteration so derived blocks don't linger in the heap.
+    """
     n = (length + 63) // 64  # SHA-512 = 64-byte blocks
-    okm = b""
-    prev = b""
-    for i in range(1, n + 1):
-        prev = hmac.new(prk, prev + info + bytes([i]), hashlib.sha512).digest()
-        okm += prev
-    return okm[:length]
+    okm = bytearray()
+    prev = bytearray()
+    try:
+        for i in range(1, n + 1):
+            msg = bytearray(prev)
+            try:
+                msg.extend(info)
+                msg.append(i)
+                next_prev = _hmac_digest_bytearray(prk, msg, hashlib.sha512)
+            finally:
+                wipe(msg)
+            wipe(prev)
+            prev = next_prev
+            okm.extend(prev)
+        return okm[:length]
+    finally:
+        wipe(prev)
+        # Note: returned slice aliases okm's storage in CPython; callers
+        # are expected to wipe the returned slice instead of okm here.
+
+
+def _hmac_digest_bytearray(key, msg, digestmod):
+    """HMAC then return the digest in a wipeable bytearray.
+
+    The ``hmac.HMAC.digest()`` method returns an immutable ``bytes``
+    object — we copy into a ``bytearray`` and wipe the original so the
+    secret digest isn't left in the heap.
+    """
+    digest = hmac.new(key, msg, digestmod).digest()
+    try:
+        return bytearray(digest)
+    finally:
+        try:
+            wipe(digest)
+        except Exception:
+            pass
 
 
 def _stretch(prk, *, version=UQS_VERSION):
@@ -1001,18 +1036,28 @@ def _stretch(prk, *, version=UQS_VERSION):
     domain = _domain_for_version(version)
     salt = domain + b"-stretch"
 
-    # Stage 1: PBKDF2-SHA512
-    stage1 = b""
+    # Stage 1: PBKDF2-SHA512. Copy the immutable result into a wipeable
+    # bytearray, then wipe the original so the heap doesn't hold the
+    # stage-1 secret for longer than the call.
+    stage1_raw = None
+    stage1 = None
     try:
-        stage1 = hashlib.pbkdf2_hmac(
+        stage1_raw = hashlib.pbkdf2_hmac(
             "sha512",
             prk,
             salt + b"-pbkdf2",
             iterations=_PBKDF2_ITERATIONS,
             dklen=64,
         )
+        stage1 = bytearray(stage1_raw)
+        try:
+            wipe(stage1_raw)
+        except Exception:
+            pass
 
-        # Stage 2: Argon2id on top of PBKDF2 output
+        # Stage 2: Argon2id on top of PBKDF2 output. ``return_bytearray``
+        # gives the caller a wipeable result + zeros the intermediate
+        # CFFI / bytes copy inside hash_secret_raw.
         return hash_secret_raw(
             secret=stage1,
             salt=salt + b"-argon2id",
@@ -1021,9 +1066,11 @@ def _stretch(prk, *, version=UQS_VERSION):
             parallelism=_ARGON2_PARALLEL,
             hash_len=_ARGON2_HASHLEN,
             type=_Argon2Type.ID,
+            return_bytearray=True,
         )
     finally:
-        wipe(stage1)
+        if stage1 is not None:
+            wipe(stage1)
 
 
 def _to_indexes(seed):
@@ -1054,35 +1101,51 @@ def _to_indexes(seed):
     return indexes
 
 
-def _passphrase_to_bytes(passphrase) -> bytes:
+def _passphrase_to_bytes(passphrase) -> bytearray:
     """NFKC-normalize a passphrase and return its UTF-8 bytes.
+
+    Returns a ``bytearray`` so the caller can wipe it after use; the
+    intermediate Python ``str`` is unreachable but the encoded UTF-8 is
+    held in mutable memory.
 
     NFKC prevents cross-platform fund loss from different Unicode
     representations of the same visual characters (macOS NFD vs Windows NFC).
     """
     if not passphrase:
-        return b""
-    return unicodedata.normalize("NFKC", passphrase).encode("utf-8")
+        return bytearray()
+    normalized = unicodedata.normalize("NFKC", str(passphrase))
+    return bytearray(normalized.encode("utf-8"))
 
 
-def _build_seed_payload(indexes, passphrase="", *, version=UQS_VERSION) -> bytes:
+def _build_seed_payload(indexes, passphrase="", *, version=UQS_VERSION) -> bytearray:
     """Build the length-prefixed, domain-separated UQS v1 seed payload.
 
     Layout: domain + word-count (uint16 LE) + per-position (pos, idx) pairs
     + b"\\x01passphrase" tag + passphrase length (uint32 LE) + passphrase bytes.
     Each field is length- or domain-tagged so the boundary between the index
     region and the passphrase is unambiguous (prevents cross-length collisions).
+
+    Returns a ``bytearray`` so the caller (``get_seed``) can wipe it
+    after derivation. The passphrase bytes are wiped here even on
+    failure since they're a copy local to this function.
     """
-    domain = _domain_for_version(version)
     passphrase_bytes = _passphrase_to_bytes(passphrase)
-    payload = bytearray(domain + b"-seed-payload-v1")
-    payload.extend(struct.pack("<H", len(indexes)))
-    for pos, idx in enumerate(indexes):
-        payload.extend(struct.pack("<BB", pos, idx))
-    payload.extend(b"\x01passphrase")
-    payload.extend(struct.pack("<I", len(passphrase_bytes)))
-    payload.extend(passphrase_bytes)
-    return bytes(payload)
+    payload = bytearray()
+    try:
+        domain = _domain_for_version(version)
+        payload.extend(domain + b"-seed-payload-v1")
+        payload.extend(struct.pack("<H", len(indexes)))
+        for pos, idx in enumerate(indexes):
+            payload.extend(struct.pack("<BB", pos, idx))
+        payload.extend(b"\x01passphrase")
+        payload.extend(struct.pack("<I", len(passphrase_bytes)))
+        payload.extend(passphrase_bytes)
+        return payload
+    except Exception:
+        wipe(payload)
+        raise
+    finally:
+        wipe(passphrase_bytes)
 
 
 def get_seed(words, passphrase="", *, version=UQS_VERSION):
@@ -1137,16 +1200,28 @@ def get_seed(words, passphrase="", *, version=UQS_VERSION):
     indexes = data
 
     # Step 1-2: Build a versioned, position-tagged, length-prefixed payload.
-    payload = _build_seed_payload(indexes, passphrase, version=version)
+    # All intermediate secrets are bytearrays and wiped in the finally
+    # block so the heap doesn't retain derivation state after return.
+    payload = None
+    prk = None
+    stretched = None
+    master = None
+    try:
+        payload = _build_seed_payload(indexes, passphrase, version=version)
 
-    # Step 3: HKDF-Extract — collapse payload + passphrase into fixed PRK
-    prk = hmac.new(domain, payload, hashlib.sha512).digest()
+        # Step 3: HKDF-Extract — collapse payload + passphrase into fixed PRK.
+        prk = _hmac_digest_bytearray(domain, payload, hashlib.sha512)
 
-    # Step 4: Chained KDF stretching (PBKDF2 → Argon2id)
-    stretched = _stretch(prk, version=version)
+        # Step 4: Chained KDF stretching (PBKDF2 → Argon2id).
+        stretched = _stretch(prk, version=version)
 
-    # Step 5: HKDF-Expand — derive output seed with domain separation
-    return _hkdf_expand(stretched, domain + b"-master", 64)
+        # Step 5: HKDF-Expand — derive output seed with domain separation.
+        master = _hkdf_expand(stretched, domain + b"-master", 64)
+        return bytes(master)
+    finally:
+        for secret in (payload, prk, stretched, master):
+            if secret is not None:
+                wipe(secret)
 
 
 def get_profile(master_key, profile_password):
@@ -1339,7 +1414,13 @@ def get_fingerprint(seed, passphrase="", *, bits=32):
             f"bits must be one of {_FINGERPRINT_BITS}, got {bits!r}"
         )
     key = get_seed(seed, passphrase)
-    return hashlib.sha256(key).hexdigest()[: bits // 4].upper()
+    try:
+        return hashlib.sha256(key).hexdigest()[: bits // 4].upper()
+    finally:
+        try:
+            wipe(key)
+        except Exception:
+            pass
 
 def get_entropy_bits(word_count, passphrase=""):
     """Calculate total entropy in bits from seed words + passphrase.
