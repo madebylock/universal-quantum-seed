@@ -186,7 +186,8 @@ def hybrid_dsa_keygen(seed):
         _secure_zero(ml_seed)
 
 
-def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
+def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION,
+                    verify_pk_bytes=None):
     """Sign with both Ed25519 and ML-DSA-65.
 
     Both algorithms sign the message with domain-separated contexts for
@@ -203,6 +204,11 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
              Bound into both Ed25519 and ML-DSA signing contexts.
         version: Hybrid-DSA wire-format version. Version 1 preserves the
              original ``hybrid-dsa-v1`` domain exactly.
+        verify_pk_bytes: Optional hybrid public key for verify-after-sign.
+             When given, both the ML-DSA component check and the composite
+             check verify against this independently-supplied key instead of
+             one re-derived from sk_bytes. When omitted, it is derived from
+             the secret key.
 
     Returns:
         3,373-byte hybrid signature.
@@ -220,6 +226,11 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
             f"Context string must be 0-255 bytes for hybrid DSA, got {len(ctx)}"
         )
     version = normalize_hybrid_dsa_version(version)
+    if verify_pk_bytes is not None and len(verify_pk_bytes) != HYBRID_DSA_PK_SIZE:
+        raise ValueError(
+            f"verify_pk_bytes must be {HYBRID_DSA_PK_SIZE} bytes, "
+            f"got {len(verify_pk_bytes)}"
+        )
 
     # Copy secret keys into mutable buffers for secure wiping
     ed_sk_buf = bytearray(sk_bytes[:_ED25519_SK])
@@ -236,10 +247,16 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
 
         # ML-DSA signs a domain-prefixed message with empty FIPS context so
         # pqcrypto can provide the production signing backend.
+        ml_verify_pk = (
+            bytes(verify_pk_bytes[_ED25519_PK:])
+            if verify_pk_bytes is not None
+            else None
+        )
         ml_sig = ml_sign(
             _ml_dsa_message(message, ctx, version=version),
             bytes(ml_sk_buf),
             ctx=b"",
+            verify_pk_bytes=ml_verify_pk,
         )
 
         sig = ed_sig + ml_sig
@@ -247,9 +264,12 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION):
         # Composite verify-after-sign (fault injection countermeasure)
         # Component functions already verify internally, but this catches
         # faults in the concatenation or in hybrid-level logic.
-        ed_pk = bytes(ed_sk_buf[32:])  # pk is embedded in ed25519 sk
-        ml_pk = _ml_pk_from_sk(bytes(ml_sk_buf))
-        pk_bytes = ed_pk + ml_pk
+        if verify_pk_bytes is not None:
+            pk_bytes = bytes(verify_pk_bytes)
+        else:
+            ed_pk = bytes(ed_sk_buf[32:])  # pk is embedded in ed25519 sk
+            ml_pk = _ml_pk_from_sk(bytes(ml_sk_buf))
+            pk_bytes = ed_pk + ml_pk
         if not hybrid_dsa_verify(message, sig, pk_bytes, ctx=ctx, version=version):
             raise RuntimeError("Hybrid DSA verify-after-sign failed (fault detected)")
 

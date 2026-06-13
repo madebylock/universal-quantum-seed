@@ -1065,7 +1065,8 @@ def _ml_verify_internal(message, sig_bytes, pk_bytes):
     return hmac.compare_digest(c_tilde, c_tilde_check)
 
 
-def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
+def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
+            verify_pk_bytes=None):
     """ML-DSA-65 pure signing (Algorithm 2, FIPS 204).
 
     Builds M' = 0x00 || len(ctx) || ctx || message, then calls the
@@ -1082,6 +1083,11 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
         ctx: Optional context string (0-255 bytes, default empty).
         deterministic: If True, use rnd=0^32 (no randomness).
         rnd: Explicit 32-byte randomness (overrides deterministic flag).
+        verify_pk_bytes: Optional public key for verify-after-sign. When
+            given, the verify step checks against this independently-supplied
+            key instead of one re-derived from sk_bytes — so a fault in the
+            secret key cannot also corrupt the key the signature is checked
+            against. When omitted, the public key is derived from sk_bytes.
 
     Returns:
         Signature bytes (3,309 bytes for ML-DSA-65).
@@ -1093,6 +1099,10 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
     """
     if len(ctx) > 255:
         raise ValueError(f"context string must be <= 255 bytes, got {len(ctx)}")
+    if verify_pk_bytes is not None and len(verify_pk_bytes) != _PK_SIZE:
+        raise ValueError(
+            f"verify_pk_bytes must be {_PK_SIZE} bytes, got {len(verify_pk_bytes)}"
+        )
 
     # C-accelerated path: ~100x faster than pure Python NTT.
     # pqcrypto uses FIPS 204 pure mode with empty context, so we can
@@ -1102,7 +1112,12 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
             and rnd is None and not deterministic):
         sig = _c_dsa_sign(bytes(sk_bytes), bytes(message))
         # Verify-after-sign (fault injection countermeasure)
-        if not _c_dsa_verify(_pk_from_sk(sk_bytes), bytes(message), sig):
+        verify_pk = (
+            bytes(verify_pk_bytes)
+            if verify_pk_bytes is not None
+            else _pk_from_sk(sk_bytes)
+        )
+        if not _c_dsa_verify(verify_pk, bytes(message), sig):
             raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
         return sig
 
@@ -1113,7 +1128,11 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None):
     # Extract pk from sk: rho(32) || K(32) || tr(64) = 128 header,
     # then recompute pk via rho + t1 from the signing computation.
     # Cheaper: decode pk_bytes from sk and verify directly.
-    pk_bytes = _pk_from_sk(sk_bytes)
+    pk_bytes = (
+        bytes(verify_pk_bytes)
+        if verify_pk_bytes is not None
+        else _pk_from_sk(sk_bytes)
+    )
     if not _ml_verify_internal(m_prime, sig, pk_bytes):
         raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
     return sig
