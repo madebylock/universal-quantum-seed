@@ -128,3 +128,44 @@ def test_spec_v1_test_vectors_match_reference_encoding():
         if "master_seed_hex" in vector:
             master = get_seed(indexes, vector["passphrase"])
             assert master.hex() == vector["master_seed_hex"], vector["id"]
+
+
+def test_spec_v1_quantum_seed_vectors_match_reference_derivation():
+    """Pin spec/v1/test-vectors.json quantum_seed_derivation to the code.
+
+    Three of these vectors had silently drifted from get_quantum_seed because
+    nothing read the file; every published post-quantum seed must now match
+    the derivation exactly (36-word provenance is required by the in-app copy).
+    """
+    vectors_path = Path(__file__).with_name("spec") / "v1" / "test-vectors.json"
+    spec = json.loads(vectors_path.read_bytes().decode("utf-8"))
+    assert spec["quantum_seed_derivation"], "no quantum seed vectors"
+    for vector in spec["quantum_seed_derivation"]:
+        derived = uqs.get_quantum_seed(
+            bytes.fromhex(vector["master_key_hex"]),
+            vector["algorithm"],
+            vector["key_index"],
+            _word_count=36,
+        )
+        assert derived.hex() == vector["seed_hex"], vector["id"]
+        assert len(derived) == vector["seed_length"], vector["id"]
+
+
+def test_seed_v1_quantum_seed_vectors():
+    """Pin post-quantum seed derivation to the shared KAT, in lockstep with
+    the other implementations: every (master_key, algorithm, key_index) must
+    derive exactly the published seed. (Three spec vectors had silently
+    drifted because nothing read them.)"""
+    kat_path = Path(__file__).with_name("kat") / "seed_v1.json"
+    kat = json.loads(kat_path.read_bytes().decode("utf-8"))
+    vectors = kat.get("quantum_seed_derivation") or []
+    assert vectors, "shared KAT carries no quantum seed vectors"
+    for vector in vectors:
+        derived = uqs.get_quantum_seed(
+            bytes.fromhex(vector["master_key_hex"]),
+            vector["algorithm"],
+            vector["key_index"],
+            _word_count=36,
+        )
+        assert derived.hex() == vector["seed_hex"], vector["id"]
+        assert len(derived) == vector["seed_length"], vector["id"]
