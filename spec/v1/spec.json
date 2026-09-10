@@ -6,24 +6,44 @@
 
   "seed": {
     "word_counts": [24, 36],
-    "data_words": {"24": 22, "36": 34},
-    "checksum_words": 2,
+    "entropy_bytes": {"24": 22, "36": 34},
+    "checksum_bits": {"24": 14, "36": 12},
+    "packed_bits": {"24": 190, "36": 284},
     "entropy_bits": {"24": 176, "36": 272},
     "post_quantum_bits": {"24": 88, "36": 136},
     "quantum_safe_minimum": 36,
     "icon_set_size": 256,
     "icon_index_range": [0, 255],
-    "bits_per_icon": 8
+    "bits_per_icon": 8,
+    "distinct_icons": true,
+    "encoding": {
+      "name": "falling-factorial mixed-radix unrank (permutation without replacement of the 256-icon table)",
+      "packed_value": "V = (int_be(entropy) << checksum_bits) | checksum",
+      "encode": "unused = [0..255]; for position i in 0..N-1: digit = V mod (256-i); V = V div (256-i); icon_i = unused.pop(digit). Position 0 takes the least-significant digit; position N-1 the most-significant.",
+      "decode": "digit_i = index of icon_i in the still-unused list (then remove it); V = Horner from position N-1 down to 0: V = V*(256-pos) + digit_pos; checksum = V & (2^checksum_bits - 1); entropy = (V >> checksum_bits) as entropy_bytes big-endian.",
+      "reject": [
+        "length not 24 or 36",
+        "element not an integer in 0..255",
+        "repeated icon (structural, checked before the checksum)",
+        "(V >> checksum_bits) >= 2^(8*entropy_bytes) (unrank headroom, never produced by encoding)",
+        "checksum mismatch"
+      ],
+      "capacity_check": "2^(8*entropy_bytes + checksum_bits) <= 256!/(256-N)!  (284 <= 284.27 bits for 36 words, 190 <= 190.39 for 24)",
+      "cutover": "Replaces v1 in place (UQS was never officially released). Pre-release 'N-2 data words + 2 checksum words' phrases are not valid v1 phrases; there is no legacy decode path. Master seeds for a given entropy are unchanged.",
+      "per_position_note": "The phrase as a whole carries exactly 8*entropy_bytes bits, but per-position marginals are not uniform: the last icon is strongly biased because its digit only partly spans its radix. Inherent to mixed-radix encoding; not an RNG defect."
+    }
   },
 
   "checksum": {
     "algorithm": "HMAC-SHA-256",
     "key": "universal-seed-v1-checksum",
-    "key_bytes": 25,
-    "message": "data indexes as raw bytes",
-    "output": "first 2 bytes of HMAC digest",
-    "error_detection_bits": 16,
-    "false_positive_rate": "1 in 65536"
+    "key_bytes": 26,
+    "message": "the entropy bytes (22 for 24 words, 34 for 36 words), not the icon indexes",
+    "output": "top checksum_bits of int_be(digest[0:2]): int_be(digest[0:2]) >> (16 - checksum_bits)",
+    "checksum_bits": {"24": 14, "36": 12},
+    "error_detection_bits": {"24": 14, "36": 12},
+    "false_positive_rate": {"24": "1 in 16384", "36": "1 in 4096"},
+    "placement": "the low checksum_bits of the packed value V; no separate checksum words"
   },
 
   "passphrase": {
@@ -38,13 +58,13 @@
     "stages": [
       {
         "stage": 0,
-        "name": "Checksum Verification & Stripping",
-        "description": "Verify last 2 indexes match HMAC-SHA-256 checksum, then strip them"
+        "name": "Phrase Decoding & Checksum Verification",
+        "description": "Rank the N distinct icon indexes to the packed value V (reject a wrong length, an out-of-range element, a repeated icon, or (V >> checksum_bits) >= 2^(8*entropy_bytes)); split V into entropy bytes and checksum; recompute the truncated HMAC-SHA-256 over the entropy bytes and reject on mismatch. Only the recovered entropy bytes continue to stage 1."
       },
       {
         "stage": 1,
         "name": "Length-Prefixed Payload",
-        "description": "Build a versioned, domain-separated payload with explicit length prefixes on every variable-length field. Layout: b'universal-seed-v1-seed-payload-v1' || uint16_LE(word_count) || (pos, idx) bytes || b'\\x01passphrase' || uint32_LE(passphrase_byte_len) || NFKC(passphrase) bytes. The domain prefix, word-count prefix, field tag, and passphrase length prefix together ensure that no two distinct (indexes, passphrase) inputs share a payload."
+        "description": "Build a versioned, domain-separated payload with explicit length prefixes on every variable-length field. Layout: b'universal-seed-v1-seed-payload-v1' || uint16_LE(entropy_bytes: 22 or 34) || (pos, entropy_byte) pairs || b'\\x01passphrase' || uint32_LE(passphrase_byte_len) || NFKC(passphrase) bytes. The domain prefix, entropy-length prefix, field tag, and passphrase length prefix together ensure that no two distinct (entropy, passphrase) inputs share a payload."
       },
       {
         "stage": 2,

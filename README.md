@@ -4,7 +4,7 @@
 
 ### A visual and multilingual seed phrase system with hybrid cryptography
 
-**272-bit entropy** · **Hybrid quantum-safe crypto** · **42 languages** · **256 icons** · **16-bit checksum**
+**272-bit entropy** · **Hybrid quantum-safe crypto** · **42 languages** · **256 icons** · **Packed 12/14-bit checksum**
 
 [![License: PolyForm Shield 1.0.0](https://img.shields.io/badge/License-PolyForm%20Shield%201.0.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Quantum Safe](https://img.shields.io/badge/Quantum-Safe-00d4aa?style=for-the-badge)](#-quantum-security)
@@ -141,7 +141,8 @@ The Universal Quantum Seed takes a fundamentally different approach:
 | Words per position | 1 | **Multiple** (synonyms, slang, abbreviations) |
 | Languages | 10 | **42** |
 | Visual recovery | :x: | :white_check_mark: **Select icons directly** |
-| Checksum | 4–8 bit | :white_check_mark: **16-bit** |
+| Checksum | 4–8 bit | :white_check_mark: **12-bit (36w) / 14-bit (24w)** — packed into the icons, no checksum words |
+| Repeated words | :warning: Allowed | :white_check_mark: **Never** — every icon in a phrase is distinct |
 | Paper backup recognizable as crypto? | :warning: Yes | :shield: **No** — looks like random notes |
 | Mixed-language backup | :x: | :white_check_mark: Write in any combination |
 | Accent/diacritic flexible | :x: | :white_check_mark: `corazón` = `corazon` |
@@ -155,9 +156,11 @@ The Universal Quantum Seed takes a fundamentally different approach:
 ## How It Works
 
 ```
-36 words = 34 random + 2 checksum = 272 bits of entropy (2²⁷² combinations)
-24 words = 22 random + 2 checksum = 176 bits of entropy (2¹⁷⁶ combinations)
+36 words = 36 distinct icons = 272 bits of entropy (2²⁷² combinations) + 12-bit packed checksum
+24 words = 24 distinct icons = 176 bits of entropy (2¹⁷⁶ combinations) + 14-bit packed checksum
 ```
+
+**No icon ever repeats within a phrase.** The HMAC-SHA-256-based checksum is packed into the duplicate-free icon encoding itself rather than spent on two separate checksum words, so every word carries entropy. A repeated icon is rejected structurally before the checksum is even evaluated.
 
 <table>
 <tr>
@@ -190,16 +193,16 @@ The system supports two entropy configurations:
 
 <div align="center">
 
-| Configuration | Words | Random + Checksum | Entropy | Post-Quantum | Use Case |
+| Configuration | Words | Icons + Checksum | Entropy | Post-Quantum | Use Case |
 |:---|:---:|:---:|:---:|:---:|:---|
-| **Standard (Quantum-Safe)** | 36 | 34 + 2 | 272-bit | 136-bit (Grover) | Quantum-safe — required for post-quantum key derivation |
-| **Compact (Classical)** | 24 | 22 + 2 | 176-bit | 88-bit (Grover) | Classical security — sufficient for traditional crypto |
+| **Standard (Quantum-Safe)** | 36 | 36 distinct + 12-bit packed | 272-bit | 136-bit (Grover) | Quantum-safe — required for post-quantum key derivation |
+| **Compact (Classical)** | 24 | 24 distinct + 14-bit packed | 176-bit | 88-bit (Grover) | Classical security — sufficient for traditional crypto |
 
 </div>
 
 <br>
 
-**272-bit** exceeds the strongest entropy level used in cryptocurrency. Brute-forcing a 272-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding, and include a 16-bit checksum (2 dedicated words) for error detection.
+**272-bit** exceeds the strongest entropy level used in cryptocurrency. Brute-forcing a 272-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding, and pack an HMAC-SHA-256-based checksum (12-bit for 36 words, 14-bit for 24 words) into the icon encoding itself for error detection — no separate checksum words, and no icon ever repeats within a phrase. The false-positive rate is 1-in-4,096 (36 words) / 1-in-16,384 (24 words), still 16–64× stronger than BIP39's 8-bit 24-word checksum; a repeated icon is rejected structurally before the checksum runs.
 
 > **For quantum-safe applications, always use the 36-word format.** The 36-word seed provides 272-bit entropy (136-bit post-quantum), which exceeds NIST Level 3 (ML-DSA-65) and Level 5 requirements. The 24-word compact format (176-bit / 88-bit post-quantum) is suitable for classical cryptographic use only.
 
@@ -267,11 +270,11 @@ A single CSPRNG (like `secrets`) is already sufficient for most applications. We
 After generation, the seed is transformed into a 512-bit master key through a **6-layer hardening pipeline**. Each layer addresses a specific attack vector:
 
 ```
-  Seed (34 × 8-bit icons + 2 checksum) + optional Passphrase
+  Seed (36 distinct icons, 12-bit checksum packed in) + optional Passphrase
          │
     ┌────▼─────────────────────┐
-    │ 0. Checksum Verification │  Verifies the 2 checksum words
-    │    & Stripping           │  Then strips them — only data words enter KDF
+    │ 0. Checksum Verification │  Rejects any repeated icon, then verifies the
+    │    & Decoding            │  packed checksum — only seed entropy enters KDF
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
@@ -469,9 +472,9 @@ No external dependencies required. `seed.py` uses only the Python standard libra
 ```python
 from seed import generate_words, get_seed, get_fingerprint, get_entropy_bits, get_languages, verify_checksum
 
-# Generate 36 words (272-bit entropy, 34 random + 2 checksum)
+# Generate 36 words (272-bit entropy, 36 distinct icons, checksum packed in)
 words = generate_words(36)
-# → [(15, "dog"), (63, "sun"), (136, "key"), ..., (cs1, "word"), (cs2, "word")]
+# → [(15, "dog"), (63, "sun"), (136, "key"), ...]   # no icon repeats
 
 # Generate in a specific language
 words = generate_words(36, language="french")
@@ -485,7 +488,7 @@ get_languages()
 seed = get_seed(words)                  # 64-byte master seed
 fp   = get_fingerprint(words)           # "A3F1B2C4"
 
-# Verify checksum (last 2 words)
+# Verify the packed checksum (a repeated icon is rejected first)
 verify_checksum(words)                  # True
 
 # With a passphrase (second factor — same words, different passphrase = different seed)
@@ -601,9 +604,9 @@ print(kdf_info())
 
 | Function | Signature | Returns |
 |:---|:---|:---|
-| `generate_words` | `generate_words(word_count=36, extra_entropy=None, language=None)` | `list[(int, str)]` — index/word pairs (last 2 are checksum) |
-| `verify_checksum` | `verify_checksum(words)` | `bool` — True if last 2 words match expected checksum |
-| `get_seed` | `get_seed(words, passphrase="")` | `bytes` — 64-byte master seed (checksum verified & stripped) |
+| `generate_words` | `generate_words(word_count=36, extra_entropy=None, language=None)` | `list[(int, str)]` — index/word pairs (all distinct; checksum packed into the encoding) |
+| `verify_checksum` | `verify_checksum(words)` | `bool` — True if every icon is distinct and the packed checksum verifies |
+| `get_seed` | `get_seed(words, passphrase="")` | `bytes` — 64-byte master seed (checksum verified) |
 | `get_profile` | `get_profile(seed, profile_password)` | `bytes` — 64-byte profile key (instant HMAC, no KDF) |
 | `get_fingerprint` | `get_fingerprint(seed, passphrase="", *, bits=32)` | `str` — uppercase hex; `bits` ∈ {32, 64, 128, 256} (default 32 → 8 chars) |
 | `get_entropy_bits` | `get_entropy_bits(word_count, passphrase="")` | `float` — estimated total entropy |
@@ -1195,6 +1198,6 @@ PolyForm Shield License 1.0.0. See [LICENSE](LICENSE).
 
 **Quantum-safe. Built for everyone, everywhere.**
 
-<sub>Post-quantum signatures · 42 languages · 256 icons · PBKDF2 + Argon2id hardened · 272-bit quantum-safe (36 words) · 16-bit checksum</sub>
+<sub>Post-quantum signatures · 42 languages · 256 icons · PBKDF2 + Argon2id hardened · 272-bit quantum-safe (36 words) · Packed 12/14-bit checksum</sub>
 
 </div>

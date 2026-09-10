@@ -95,3 +95,36 @@ def test_seed_v1_known_answer_vectors():
         assert (
             get_fingerprint(indexes, vector["passphrase"]) == vector["fingerprint"]
         ), vector["id"]
+
+
+def test_spec_v1_test_vectors_match_reference_encoding():
+    # spec/v1/test-vectors.json is the normative, human-facing vector set
+    # (regenerated from kat/seed_v1.json). Pin every vector to the reference
+    # encoder/decoder and KDF so the published spec vectors cannot rot.
+    vectors_path = Path(__file__).with_name("spec") / "v1" / "test-vectors.json"
+    spec_vectors = json.loads(vectors_path.read_text(encoding="utf-8"))
+    assert spec_vectors["domain"] == "universal-seed-v1"
+
+    decode = uqs.seed._decode_seed_indexes
+    encode = uqs.seed._encode_seed_indexes
+    for vector in spec_vectors["vectors"]:
+        indexes = vector["indexes"]
+        word_count = vector["word_count"]
+
+        assert len(indexes) == word_count, vector["id"]
+        if vector.get("expect_invalid"):
+            assert not verify_checksum(indexes), vector["id"]
+            assert decode(indexes) is None, vector["id"]
+            continue
+        assert verify_checksum(indexes), vector["id"]
+
+        entropy = decode(indexes)
+        assert entropy is not None, vector["id"]
+        assert entropy.hex() == vector["entropy_hex"], vector["id"]
+        assert (
+            encode(bytes.fromhex(vector["entropy_hex"]), word_count=word_count)
+            == indexes
+        ), vector["id"]
+        if "master_seed_hex" in vector:
+            master = get_seed(indexes, vector["passphrase"])
+            assert master.hex() == vector["master_seed_hex"], vector["id"]

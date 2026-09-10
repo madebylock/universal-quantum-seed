@@ -22,11 +22,12 @@ X25519+ML-KEM-768).
 | Property | Value |
 |:---|:---|
 | Word counts | 24 (classical) or 36 (quantum-safe) |
-| Data words | 22 (classical) or 34 (quantum-safe) |
-| Checksum words | 2 (last two positions) |
+| Entropy bytes | 22 (24 words) or 34 (36 words) — see §3.1 |
+| Checksum bits | 14 (24 words) or 12 (36 words), packed into the icon encoding (no checksum words) |
+| Phrase structure | N **distinct** icon indexes; a repeated icon is structurally invalid |
 | Entropy | 24 words = 176-bit (classical), 36 words = 272-bit (quantum-safe) |
 | Post-quantum security | 24 words = 88-bit, 36 words = 136-bit (Grover) |
-| Checksum | 16-bit HMAC-SHA-256 (1-in-65,536 error detection) |
+| Checksum | Truncated HMAC-SHA-256 over the entropy bytes: 1-in-16,384 (24 words) / 1-in-4,096 (36 words) false positive |
 | Fingerprint | 8-char hex by default (4 bytes / 32 bits); selectable 32/64/128/256 bits |
 | Domain separator | `b"universal-seed-v1"` |
 | Icon set | 256 icons, indexed 0-255 |
@@ -95,49 +96,172 @@ Base word list (index 0-255):
 
 ## 3. Encoding
 
-A seed is an ordered list of N icon indexes where:
-- First N-2 indexes are **data** (random entropy)
-- Last 2 indexes are **checksum** (derived from data)
+A v1 seed phrase is an ordered sequence of N **distinct** icon indexes (0–255), N = 24 or 36.
+There are no separate "data words" and "checksum words": the random entropy and the checksum
+are packed into one integer V, and V is **unranked** into a permutation-without-replacement
+of the 256-icon table (a falling-factorial mixed-radix number). Position i draws from the
+256−i icons not yet used, so no icon ever repeats within a valid phrase, and a phrase that
+contains a repeated icon is structurally invalid before the checksum is even consulted.
+
+### 3.1 Layout
+
+| Words (N) | Entropy bytes (E) | Entropy bits (8E) | Checksum bits (C) | Packed bits (8E+C) | Capacity log2(256!/(256−N)!) | False-positive rate |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 36 | 34 | 272 | 12 | 284 | 284.27 | 1 in 4,096 |
+| 24 | 22 | 176 | 14 | 190 | 190.39 | 1 in 16,384 |
+
+The layout is a fixed function of N. Both rows satisfy 2^(8E+C) ≤ 256!/(256−N)!, so every
+packed value is encodable; the small remaining gap (the **unrank headroom**) is never
+produced by encoding and MUST be rejected by decoding (§3.4).
+
+### 3.2 Packed Value
 
 ```
-full_seed = [data_0, data_1, ..., data_{N-3}, checksum_0, checksum_1]
+V = (int_be(entropy) << C) | checksum
 ```
 
-- 24 words: 22 data bytes + 2 checksum = 176 bits of entropy (classical tier)
-- 36 words: 34 data bytes + 2 checksum = 272 bits of entropy (quantum-safe tier)
+- `int_be(entropy)` — the E entropy bytes read as one big-endian unsigned integer
+- `checksum` — the C-bit integer of §4; it occupies the C least-significant bits of V
+- 0 ≤ V < 2^(8E+C)
+
+### 3.3 Encode (unrank)
+
+```python
+LAYOUT = {36: (34, 12), 24: (22, 14)}   # N: (E, C)
+
+def encode(entropy, N):
+    E, C = LAYOUT[N]
+    assert len(entropy) == E
+    V = (int.from_bytes(entropy, "big") << C) | compute_checksum(entropy, N)   # §4
+    unused = list(range(256))            # icons not yet used, ascending
+    indexes = []
+    for i in range(N):                   # position 0 first
+        V, digit = divmod(V, 256 - i)    # digit = V mod (256-i); V = V div (256-i)
+        indexes.append(unused.pop(digit))
+    assert V == 0                        # guaranteed by the layout table
+    return indexes
+```
+
+Digit order: **position 0 takes the least-significant digit** (radix 256), position 1 the
+next (radix 255), and so on; position N−1 takes the most-significant digit (radix 256−N+1).
+Digit `d` at position i selects the d-th smallest (0-based) icon among those not yet used.
+
+### 3.4 Decode (rank)
+
+```python
+def decode(indexes):
+    N = len(indexes)
+    if N not in LAYOUT:
+        return None                              # REJECT: wrong length
+    E, C = LAYOUT[N]
+    unused = list(range(256))
+    digits = []
+    for icon in indexes:
+        if not (isinstance(icon, int) and not isinstance(icon, bool) and 0 <= icon <= 255):
+            return None                          # REJECT: out of range / non-integer
+        if icon not in unused:
+            return None                          # REJECT: repeated icon (structural)
+        digit = unused.index(icon)               # rank among the still-unused icons
+        digits.append(digit)
+        unused.remove(icon)
+    V = 0
+    for i in range(N - 1, -1, -1):               # Horner, most-significant digit first
+        V = V * (256 - i) + digits[i]
+    if (V >> C) >= (1 << (8 * E)):
+        return None                              # REJECT: unrank headroom, never produced
+    checksum = V & ((1 << C) - 1)                # low C bits
+    entropy = (V >> C).to_bytes(E, "big")        # E bytes, big-endian
+    if checksum != compute_checksum(entropy, N): # implementations: constant-time compare
+        return None                              # REJECT: checksum mismatch
+    return entropy
+```
+
+Decoding MUST reject, in this order:
+
+1. a length other than 24 or 36;
+2. any element that is not an integer in 0..255 (booleans are not integers here);
+3. a repeated icon — a structural check, evaluated before the checksum;
+4. a packed value whose entropy part is ≥ 2^(8E) — the unrank headroom that encoding
+   never produces;
+5. a checksum mismatch.
+
+Only the recovered **entropy bytes** are passed on to the KDF (§6). The icon indexes
+themselves never enter the payload.
+
+### 3.5 Properties
+
+- **Bijective on the valid set.** Encode is injective from the 2^(8E) entropy values into
+  the duplicate-free phrases and decode inverts it exactly; entropy is 272 / 176 bits,
+  unchanged.
+- **No repeats.** A valid phrase never contains the same icon twice.
+- **Master seeds unchanged.** Because only the entropy bytes reach the KDF, the master seed
+  for a given entropy is byte-identical to what the pre-release "N−2 data + 2 checksum
+  words" layout derived from the same bytes. The known-answer file `kat/seed_v1.json`
+  proves this (e.g. entropy `00 01 … 15`, 24 words, no passphrase → fingerprint
+  `0960B7F0` under both layouts).
+
+### 3.6 Cutover
+
+UQS was never officially released. This encoding therefore **replaces v1 in place**, under
+the unchanged domain separator `universal-seed-v1` and with every KDF parameter unchanged.
+Phrases produced by earlier pre-release builds (N−2 raw entropy indexes followed by 2
+checksum bytes) are **not** valid v1 phrases: they fail §3.4 as a repeated icon, a
+headroom value, or a checksum mismatch, and there is deliberately no legacy decode path.
+
+### 3.7 Per-Position Distribution (not an RNG defect)
+
+The checksum is a deterministic function of the entropy, so the set of valid phrases is an
+injective image of the uniform entropy: the phrase **as a whole** carries exactly H = 8E
+bits. Per-**position** marginals, however, are not uniform. Positions 0..N−2 span their
+radices fully and are very close to uniform, but the last position's digit — the
+most-significant one — only ranges over 0..182 of radix 221 (36 words) and 0..177 of
+radix 233 (24 words), because 2^(8E+C) is below the full capacity of the mixed radix. The
+last icon is therefore strongly biased toward the lower-ranked unused icons and never
+lands on the top 38 (36 words) / 55 (24 words) of them. This is
+inherent to mixed-radix encoding, leaks nothing beyond the public structure of the format,
+and MUST NOT be mistaken for RNG failure when auditing phrase statistics.
 
 ---
 
 ## 4. Checksum
 
-The checksum is computed via HMAC-SHA-256 with domain separation:
+The checksum is a truncated HMAC-SHA-256 over the **entropy bytes** (not the icon
+indexes), with domain separation:
 
 ```python
-def compute_checksum(data_indexes):
-    key = b"universal-seed-v1-checksum"
-    message = bytes(data_indexes)
-    digest = HMAC-SHA256(key, message)
-    return [digest[0], digest[1]]
+CHECKSUM_BITS = {36: 12, 24: 14}
+
+def compute_checksum(entropy, N):
+    C = CHECKSUM_BITS[N]
+    key = b"universal-seed-v1-checksum"                       # 26 bytes
+    digest = HMAC-SHA256(key, entropy)                        # entropy: E raw bytes
+    return int.from_bytes(digest[0:2], "big") >> (16 - C)     # top C bits of the first 16
 ```
 
 | Property | Value |
 |:---|:---|
 | Algorithm | HMAC-SHA-256 |
-| Key | `b"universal-seed-v1-checksum"` (25 bytes) |
-| Message | data indexes as raw bytes |
-| Output | First 2 bytes of HMAC digest |
-| Error detection | 16 bits (1-in-65,536 false positive) |
+| Key | `b"universal-seed-v1-checksum"` (26 bytes) |
+| Message | the E entropy bytes (34 for 36 words, 22 for 24 words) |
+| Output | top C bits of the first 16 bits (big-endian) of the digest: `int_be(digest[0:2]) >> (16 − C)` |
+| C | 12 bits (36 words), 14 bits (24 words) |
+| Error detection | 1-in-4,096 false positive (36 words), 1-in-16,384 (24 words) |
+| Placement | the C least-significant bits of the packed value V (§3.2); no separate checksum words |
+
+This checksum detects transcription mistakes; it is not an authenticity check. It remains
+16–64× stronger than BIP39's 8-bit checksum on a 24-word phrase, and the repeated-icon rule
+of §3.4 catches a further class of errors at no bit cost.
 
 ### Verification
 
 ```python
-def verify_checksum(full_indexes):
-    if len(full_indexes) not in (24, 36):
-        return False
-    data = full_indexes[:-2]
-    expected = compute_checksum(data)
-    return full_indexes[-2:] == expected
+def verify_checksum(indexes):
+    return decode(indexes) is not None       # decode() from §3.4
 ```
+
+A phrase verifies iff it has a supported length, every element is an icon index, no icon
+repeats, the packed value is inside the encodable range, and the recomputed checksum
+equals the packed one.
 
 ---
 
@@ -159,21 +283,24 @@ passphrase_bytes = unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 
 ## 6. Key Derivation Pipeline (5 layers)
 
-### 6.0 Checksum Verification & Stripping
+### 6.0 Phrase Decoding & Checksum Verification
 
-Before any KDF computation:
-1. Verify the seed has exactly 24 or 36 indexes
-2. Verify the last 2 indexes match `compute_checksum(indexes[:-2])`
-3. Strip the checksum: `data_indexes = indexes[:-2]`
+Before any KDF computation, decode the phrase exactly as in §3.4:
+1. Verify the phrase has exactly 24 or 36 elements, each an integer 0–255
+2. Verify no icon repeats (structural check, evaluated before the checksum)
+3. Rank the phrase to the packed value V; reject if `(V >> C) >= 2^(8E)` (unrank headroom)
+4. Split V: `checksum = V & (2^C − 1)`, `entropy = (V >> C)` as E big-endian bytes
+5. Recompute `compute_checksum(entropy, N)` (§4) and reject on mismatch
 
-If verification fails, key derivation MUST be rejected with an error.
+If any step fails, key derivation MUST be rejected with an error. On success the **E
+recovered entropy bytes** — never the icon indexes — are the sole seed input to §6.1.
 
 ### 6.1 Length-Prefixed Payload
 
 The KDF input is a versioned, domain-separated payload with explicit length
 prefixes on every variable-length field. This makes the boundary between the
-index region and the passphrase unambiguous and prevents collisions between
-different (words, passphrase) inputs that would otherwise serialize to the
+entropy region and the passphrase unambiguous and prevents collisions between
+different (entropy, passphrase) inputs that would otherwise serialize to the
 same byte stream.
 
 ```python
@@ -183,19 +310,22 @@ def _passphrase_to_bytes(passphrase):
     return unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 
 passphrase_bytes = _passphrase_to_bytes(passphrase)
+entropy = decode(indexes)                          # §6.0: E bytes (22 or 34)
 payload  = b"universal-seed-v1-seed-payload-v1"   # domain + version
-payload += struct.pack("<H", len(data_indexes))   # uint16 LE word count
-for pos, idx in enumerate(data_indexes):
-    payload += struct.pack("<BB", pos, idx)       # (pos, idx) bytes
+payload += struct.pack("<H", len(entropy))        # uint16 LE: E (22 or 34)
+for pos, byte in enumerate(entropy):
+    payload += struct.pack("<BB", pos, byte)      # (pos, entropy byte) pairs
 payload += b"\x01passphrase"                       # field tag
 payload += struct.pack("<I", len(passphrase_bytes))  # uint32 LE pp length
 payload += passphrase_bytes
 ```
 
-Each (pos, idx) pair binds an icon to its slot (preventing reordering). The
-domain prefix, word-count prefix, field tag, and passphrase length prefix
-together ensure that no two distinct (indexes, passphrase) inputs share a
-payload — including across the 24-word and 36-word formats.
+Each (pos, byte) pair binds an entropy byte to its slot (preventing reordering).
+The domain prefix, entropy-length prefix, field tag, and passphrase length prefix
+together ensure that no two distinct (entropy, passphrase) inputs share a
+payload — including across the 24-word and 36-word formats. The uint16 field
+carries E (22 or 34) — the historical "data word count" — so payloads are
+byte-for-byte identical to the pre-release layout for the same entropy.
 
 NFKC normalization of the passphrase prevents cross-platform fund loss from
 different Unicode representations of the same visual characters (macOS NFD
@@ -599,7 +729,7 @@ domain separation to prevent signature/ciphertext stripping attacks.
 - Brute-force (272-bit entropy + chained KDF)
 - GPU/ASIC attacks (Argon2id memory-hardness)
 - Reordering attacks (positional binding)
-- Transcription errors (16-bit checksum)
+- Transcription errors (14/12-bit packed checksum plus the repeated-icon structural check)
 - Weak RNG (8 independent entropy sources, validated before use)
 - Fuzzy misresolution in KDF (strict mode)
 - Quantum computers (symmetric crypto + post-quantum + hybrid signatures/KEM)
@@ -622,7 +752,7 @@ v1 provides two independent verification signals:
 
 | Signal | Bits | Derived from | When available |
 |:---|:---:|:---|:---|
-| Checksum (last 2 words) | 16 | Data indexes via HMAC-SHA-256 | Always (built into seed) |
+| Checksum (packed into the phrase) | 14 (24 words) / 12 (36 words) | Entropy bytes via truncated HMAC-SHA-256 (§4) | Always (built into seed) |
 | Fingerprint | 32 | SHA-256 of full master seed (always runs KDF) | After resolution |
 
 Both MUST be specified and implemented. The fingerprint changes with passphrase; the checksum does not.

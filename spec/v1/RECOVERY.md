@@ -13,6 +13,7 @@
 1. Your **24 or 36 words** (or icon indexes 0–255)
 2. Your **passphrase** (if one was set; empty string if none)
 3. A system that can compute:
+   - Arbitrary-precision integer arithmetic (a 190- or 284-bit integer; Python `int` is enough)
    - HMAC-SHA-256 (checksum verification)
    - HMAC-SHA-512 (HKDF-Extract, HKDF-Expand, profiles)
    - PBKDF2-SHA-512
@@ -32,42 +33,110 @@ eye=0, ear=1, nose=2, mouth=3, tongue=4, bone=5, ...
 ```
 
 If you wrote your seed in another language, resolve each word through the
-42-language lookup table in `words.py`. The checksum (Step 2) will catch
-any misresolution.
+42-language lookup table in `words.py`. A valid v1 phrase never contains the
+same icon twice — if you see a repeat, one of the words is misread. The checksum
+(Step 3) will catch any other misresolution.
 
-**Result:** A list of N indexes (N = 24 or 36).
+**Result:** A list of N distinct indexes (N = 24 or 36).
 
-### Step 2: Verify Checksum
+### Step 2: Rank the Phrase to an Integer
 
-The last 2 indexes are a 16-bit HMAC-SHA-256 checksum over the data indexes.
+A v1 phrase does not carry separate "checksum words". The N distinct icons are a
+mixed-radix number: position 0 is the least-significant digit (radix 256), position 1
+the next (radix 255), …, position N−1 the most-significant (radix 256−N+1). The
+*digit* at a position is the rank of its icon among the icons **not yet used** by
+earlier positions (0 = the smallest unused index).
 
 ```python
-data_indexes = indexes[:-2]         # first N-2
-checksum     = indexes[-2:]         # last 2
+LAYOUT = {24: (22, 14), 36: (34, 12)}   # word_count: (entropy_bytes E, checksum_bits C)
 
-key     = b"universal-seed-v1-checksum"
-message = bytes(data_indexes)
-digest  = HMAC-SHA256(key, message)
+N = len(indexes)
+E, C = LAYOUT[N]                        # any other length is not a v1 phrase
 
-assert checksum == [digest[0], digest[1]]
+unused = list(range(256))
+digits = []
+for icon in indexes:
+    assert 0 <= icon <= 255, "not an icon index"
+    assert icon in unused,   "repeated icon: not a valid v1 phrase"
+    d = unused.index(icon)              # how many unused icons are smaller
+    digits.append(d)
+    del unused[d]
+
+V = 0
+for pos in range(N - 1, -1, -1):        # Horner: last position first
+    V = V * (256 - pos) + digits[pos]
+
+assert (V >> C) < (1 << (8 * E)), "value in the unrank headroom: not a valid v1 phrase"
+```
+
+By hand: the digit at position i equals `icon_i` minus the number of icons at
+positions 0..i−1 that are smaller than `icon_i`. The headroom check rejects
+packed values that encoding can never produce (the mixed radix holds slightly
+more than 2^(8E+C) values).
+
+### Step 3: Split Off and Verify the Checksum
+
+The low C bits of V are the checksum; everything above them is the entropy.
+The checksum is the top C bits of the first 16 bits of HMAC-SHA-256 over the
+**entropy bytes**:
+
+```python
+checksum = V & ((1 << C) - 1)                    # low C bits
+entropy  = (V >> C).to_bytes(E, "big")           # E bytes, big-endian
+
+key      = b"universal-seed-v1-checksum"
+digest   = HMAC-SHA256(key, entropy)
+expected = int.from_bytes(digest[0:2], "big") >> (16 - C)   # top C bits of first 16
+
+assert checksum == expected, "checksum mismatch: transcription error"
 ```
 
 If the checksum doesn't match, you have a transcription error. Fix it before
 proceeding — incorrect data will derive a wrong (and useless) key.
 
-### Step 3: Strip Checksum
+**Result:** `entropy` — 22 bytes (24 words) or 34 bytes (36 words). Only these
+entropy bytes enter the key derivation pipeline; the icon indexes themselves
+never do.
 
-Only the data indexes enter the key derivation pipeline:
+#### Complete Steps 2–3 as one runnable function
 
 ```python
-data_indexes = indexes[:-2]   # 22 data (24-word) or 34 data (36-word)
+import hmac, hashlib
+
+LAYOUT = {24: (22, 14), 36: (34, 12)}   # word_count: (entropy_bytes, checksum_bits)
+
+def recover_entropy(indexes):
+    N = len(indexes)
+    E, C = LAYOUT[N]                                    # KeyError => not 24/36 words
+    unused = list(range(256))
+    digits = []
+    for icon in indexes:
+        assert 0 <= icon <= 255, "not an icon index"
+        assert icon in unused, "repeated icon: not a valid v1 phrase"
+        d = unused.index(icon)
+        digits.append(d)
+        del unused[d]
+    V = 0
+    for pos in range(N - 1, -1, -1):
+        V = V * (256 - pos) + digits[pos]
+    assert (V >> C) < (1 << (8 * E)), "unrank headroom: not a valid v1 phrase"
+    checksum = V & ((1 << C) - 1)
+    entropy = (V >> C).to_bytes(E, "big")
+    digest = hmac.new(b"universal-seed-v1-checksum", entropy, hashlib.sha256).digest()
+    expected = int.from_bytes(digest[:2], "big") >> (16 - C)
+    assert checksum == expected, "checksum mismatch: transcription error"
+    return entropy
+
+# Quick self-check (the all-zero 24-word vector below):
+assert recover_entropy([91, 42] + list(range(22))) == bytes(22)
 ```
 
 ### Step 4: Length-Prefixed Payload
 
-Build a versioned, domain-separated payload with explicit length prefixes on
-every variable-length field. Each field is length- or domain-tagged so the
-boundary between the index region and the passphrase is unambiguous:
+Build a versioned, domain-separated payload from the **entropy bytes** recovered
+in Step 3 (not the icon indexes), with explicit length prefixes on every
+variable-length field. Each field is length- or domain-tagged so the boundary
+between the entropy region and the passphrase is unambiguous:
 
 ```python
 import struct, unicodedata
@@ -79,16 +148,16 @@ passphrase_bytes = (
 )
 
 payload  = b"universal-seed-v1-seed-payload-v1"   # domain + version
-payload += struct.pack("<H", len(data_indexes))   # uint16 LE word count
-for pos, idx in enumerate(data_indexes):
-    payload += struct.pack("<BB", pos, idx)       # (pos, idx) bytes
+payload += struct.pack("<H", len(entropy))        # uint16 LE: 22 or 34
+for pos, byte in enumerate(entropy):
+    payload += struct.pack("<BB", pos, byte)      # (pos, entropy byte) pairs
 payload += b"\x01passphrase"                       # field tag
 payload += struct.pack("<I", len(passphrase_bytes))  # uint32 LE pp length
 payload += passphrase_bytes
 ```
 
-The domain prefix, word-count prefix, field tag, and passphrase-length prefix
-together ensure no two distinct `(indexes, passphrase)` inputs share a payload
+The domain prefix, entropy-length prefix, field tag, and passphrase-length prefix
+together ensure no two distinct `(entropy, passphrase)` inputs share a payload
 — including across the 24-word and 36-word formats. An empty passphrase `""`
 produces the same result as no passphrase.
 
@@ -258,7 +327,7 @@ was successful.
 
 | Stage | String | Usage |
 |:---|:---|:---|
-| Checksum | `b"universal-seed-v1-checksum"` | HMAC-SHA-256 key |
+| Checksum | `b"universal-seed-v1-checksum"` | HMAC-SHA-256 key over the entropy bytes; top 14 (24w) / 12 (36w) bits of digest[0:2] |
 | HKDF-Extract | `b"universal-seed-v1"` | HMAC-SHA-512 key |
 | PBKDF2 salt | `b"universal-seed-v1-stretch-pbkdf2"` | PBKDF2-SHA-512 salt |
 | Argon2id salt | `b"universal-seed-v1-stretch-argon2id"` | Argon2id salt |
@@ -275,24 +344,51 @@ was successful.
 
 ---
 
-## Test Vector (Minimal)
+## Test Vectors (Minimal)
 
-All-zeros 24-word seed, no passphrase:
+### All-zero entropy, 24 words, no passphrase
 
 ```
-Data indexes:     [0, 0, 0, ..., 0]  (22 zeros)
-Checksum indexes: [169, 111]
-Full indexes:     [0, 0, ..., 0, 169, 111]  (24 total)
-Passphrase:       "" (empty)
+Entropy:       22 zero bytes (hex 00 x 22)
+HMAC-SHA256(b"universal-seed-v1-checksum", entropy)[0:2] = a9 6f
+Checksum:      0xA96F >> 2 = 0x2A5B = 10843          (top 14 bits)
+V:             (0 << 14) | 10843 = 10843
 
-PRK (HKDF-Extract only):
-  0fbfbbcbe6763d2395f3502ff2c4fc099caa2fbf0476dd0117696a9afb51e3d1
-  996e4232da6c04f6bb2e346878487d101ebddaf15b6e8ea0c95f72cce4bf675f
+Unrank (position 0 first):
+  pos 0: 10843 mod 256 = 91, V = 42   -> unused[91] = 91
+  pos 1:    42 mod 255 = 42, V = 0    -> unused[42] = 42
+  pos 2..23: digit 0                   -> smallest unused: 0, 1, 2, ..., 21
 
-Fingerprint: 3F6FEE12
+Phrase indexes: [91, 42, 0, 1, 2, 3, ..., 21]   (24 distinct icons)
+Passphrase:     "" (empty)
+
+PRK (HKDF-Extract only, Step 5):
+  681a638c85c930b36d8cd4596e80737347fbd27a403105c3cc65ee93856663fc
+  39579b312927303d25ed4ea1eb5c7112364bd68c099db59e0d25509fc376c9ea
+
+Fingerprint:    6C1075D0
 ```
 
-See `test-vectors.json` for the full set of test vectors including quantum key derivation.
+Rank check by hand: digits = [91, 42, 0, 0, …] (icon 0 at position 2 has no
+smaller unused icon, and each later icon is the smallest remaining), so
+V = 42·256 + 91 = 10843, entropy = 10843 >> 14 = 0, checksum = 10843.
+
+### Sequential entropy, 24 words, no passphrase
+
+```
+Entropy:        00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15
+digest[0:2]:    ef 78  ->  checksum = 0xEF78 >> 2 = 0x3BDE = 15326
+Phrase indexes: [222, 53, 187, 179, 67, 73, 232, 167, 154, 189, 2, 214,
+                 21, 35, 10, 93, 104, 81, 118, 224, 226, 161, 0, 1]
+Fingerprint:    0960B7F0
+```
+
+(Position 2 illustrates the rank: its digit is 186 — icon 187 minus the one
+earlier icon, 53, that is smaller than it.)
+
+See `test-vectors.json` for the full set (entropy, phrase, master seed and
+fingerprint for every known-answer vector, plus vectors that MUST be rejected)
+and `kat/seed_v1.json` for the pinned known-answer file.
 
 ---
 
@@ -303,3 +399,9 @@ This guide describes v1 of the Universal Quantum Seed. The compatibility contrac
 > **v1 seeds MUST always derive the same outputs forever.**
 > No parameter may be changed within v1. If parameters change, a new version
 > with a new domain separator and spec folder MUST be created.
+
+The distinct-icon encoding (Steps 2–3) replaced the pre-release "N−2 data
+words + 2 checksum words" layout in place, before any official release. Phrases
+written down by pre-release builds are not valid v1 phrases and there is no
+legacy decode path; the KDF (Steps 4–8) and every domain string are unchanged,
+so the master seed for a given entropy is identical under both layouts.

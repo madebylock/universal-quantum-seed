@@ -4,15 +4,19 @@ __version__ = "1.0"
 
 """Seed generation for the Universal Quantum Seed.
 
-Generates cryptographically secure seeds using 256 visual icons (8 bits each).
-- 24 words = 22 random + 2 checksum = 176 bits of entropy
+Generates cryptographically secure seeds using 256 visual icons. Every phrase
+is a sequence of DISTINCT icons: the random entropy and its checksum are
+packed into one value and unranked into a permutation-without-replacement
+of the icon table, so no icon ever repeats and no entropy is lost.
+- 24 words = 176 bits of entropy + 14-bit checksum
   (accepted for recovery/classical compatibility, not recommended for new
   long-term seeds)
-- 36 words = 34 random + 2 checksum = 272 bits of entropy
+- 36 words = 272 bits of entropy + 12-bit checksum
   (recommended default and required for post-quantum derivation)
 
-The last 2 words of every seed are a 16-bit checksum (HMAC-SHA-256 based)
-that detects transcription errors with 1-in-65,536 false-positive rate.
+The checksum (HMAC-SHA-256 based) detects transcription errors with a
+1-in-4,096 (36 words) / 1-in-16,384 (24 words) false-positive rate, and a
+phrase with a repeated icon is rejected structurally before it is checked.
 
 Entropy is gathered from multiple independent sources and mixed through
 SHA-512 (a cryptographic randomness extractor). This ensures that even if
@@ -39,7 +43,7 @@ Entropy sources (defense in depth — OS CSPRNG is sufficient alone):
 
 Usage:
     from seed import generate_words, get_seed, get_profile, get_fingerprint, generate_quantum_keypair, resolve, search
-    words  = generate_words(36)                       # [(idx, "word"), ...] — 34 random + 2 checksum
+    words  = generate_words(36)                       # [(idx, "word"), ...] — 36 distinct icons (34 entropy bytes + packed 12-bit checksum)
     seed   = get_seed(words)                          # 64-byte master seed
     seed   = get_seed(words, "passphrase")            # with passphrase (second factor)
     prof   = get_profile(seed, "personal")            # hidden profile — independent 64-byte key
@@ -85,7 +89,7 @@ except ImportError:
 # Do not reorder, replace, or "clean up" these words in-place. Seed words
 # resolve to numeric indexes, and existing backups depend on each index keeping
 # the same English alias. Some aliases are visually or phonetically close, but
-# positional binding plus the two-word checksum catches transcription errors;
+# positional binding plus the packed HMAC checksum catches transcription errors;
 # changing the vocabulary would create a larger recovery risk. A new vocabulary
 # must be a versioned UQS v2 format with legacy aliases/migration.
 #
@@ -872,11 +876,12 @@ def _validate_entropy_pipeline(extra_entropy=None):
 
 
 def generate_words(word_count=36, extra_entropy=None, language=None):
-    """Generate a cryptographically secure seed with 16-bit checksum.
+    """Generate a cryptographically secure seed of DISTINCT icons.
 
-    The last 2 words are a checksum derived from the random words via
-    HMAC-SHA-256 with domain separation. This provides 16-bit error detection
-    (1-in-65,536 false positive rate).
+    The random entropy and an HMAC-SHA-256 checksum (12-bit for 36 words,
+    14-bit for 24; domain separated) are packed into one value and unranked
+    into a permutation-without-replacement of the 256-icon table, so no icon
+    ever repeats within a phrase while every bit of entropy is preserved.
 
     The entropy pipeline is validated before use with a fixed batch of
     1024-byte samples drawn from the same sources and tested with four
@@ -884,14 +889,14 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     batch must pass by majority before the actual seed entropy is drawn.
 
     Args:
-        word_count: 24 (176-bit, 22 random + 2 checksum; compatibility) or
-                    36 (272-bit, 34 random + 2 checksum; recommended).
+        word_count: 24 (176-bit entropy + 14-bit checksum; compact) or
+                    36 (272-bit entropy + 12-bit checksum; recommended).
         extra_entropy: Optional bytes to mix in (e.g. from mouse_entropy.digest()).
         language: Optional language code (e.g. "french", "arabic").
                   None or "english" returns English words.
 
     Returns:
-        List of (index, word) tuples. Last 2 are checksum words.
+        List of (index, word) tuples with all indexes distinct.
 
     Raises:
         ValueError: If word_count is not 24 or 36, or language is unknown.
@@ -901,7 +906,7 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
     if word_count not in (24, 36):
         raise ValueError("word_count must be 24 or 36")
 
-    data_count = word_count - 2  # random words (22 or 34)
+    data_count, _checksum_bits = _seed_layout(word_count)  # 34/12 or 22/14
 
     # Resolve word map for requested language
     if language and language != "english":
@@ -919,9 +924,9 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
         )
 
     entropy = _collect_entropy(data_count, extra_entropy)
-    indexes = list(entropy)
-    # Append 2 checksum words
-    indexes.extend(_compute_checksum(indexes))
+    # Pack the entropy with its checksum and unrank into DISTINCT icons: no
+    # icon ever repeats within a phrase, and no entropy is lost doing so.
+    indexes = _encode_seed_indexes(entropy, word_count=word_count)
     return [(idx, word_map[idx]) for idx in indexes]
 
 
@@ -942,33 +947,126 @@ def generate_seed(word_count=36, extra_entropy=None, language=None):
     ]
 
 
-def _compute_checksum(indexes, *, version=UQS_VERSION):
-    """Compute 2 checksum indexes from a list of random seed indexes."""
-    # Intentional: this checksum detects transcription mistakes; it is not an
-    # authenticity check. Two 8-bit words give 16 bits of error detection,
-    # stronger than BIP39's 24-word checksum, while preserving the seed format.
-    # Widening it would remove entropy words and break existing seed recovery
-    # unless introduced as a separate versioned format.
+# ── Duplicate-free seed encoding ──────────────────────────────────
+# A UQS phrase is a sequence of DISTINCT icon indexes. The random entropy
+# (34 or 22 bytes) and the checksum are packed into one integer that is
+# unranked into a permutation-without-replacement of the 256-icon table
+# (falling-factorial mixed radix: position i draws from the 256-i icons not
+# yet used). The map is a bijection onto a subset of the duplicate-free
+# phrases, so no entropy is lost, no icon ever repeats within a phrase, and
+# a phrase containing a repeated icon is structurally invalid before the
+# checksum is even consulted. Encoding 8*E + C bits into N distinct icons
+# requires 2**(8*E + C) <= 256!/(256-N)!  — the layouts below satisfy that.
+_SEED_LAYOUT = {
+    # word_count: (entropy_bytes, checksum_bits)
+    36: (34, 12),  # 272 + 12 = 284 bits <= log2(256!/220!) = 284.3
+    24: (22, 14),  # 176 + 14 = 190 bits <= log2(256!/232!) = 190.4
+}
+
+
+def _seed_layout(word_count):
+    """Return ``(entropy_bytes, checksum_bits)`` for a supported word count."""
+    try:
+        return _SEED_LAYOUT[word_count]
+    except KeyError:
+        raise ValueError("word_count must be 24 or 36") from None
+
+
+def _compute_checksum(entropy, *, word_count, version=UQS_VERSION):
+    """Return the checksum integer for the entropy bytes of a seed.
+
+    Intentional: this checksum detects transcription mistakes; it is not an
+    authenticity check. It is the top ``checksum_bits`` (12 for 36 words,
+    14 for 24) of HMAC-SHA-256(domain || "-checksum", entropy) — still
+    16-64x stronger than BIP39's 8-bit 24-word checksum — and it is packed
+    into the icon encoding rather than spent on separate checksum words.
+    """
+    _, checksum_bits = _seed_layout(word_count)
     domain = _domain_for_version(version)
-    digest = hmac.new(domain + b"-checksum", bytes(indexes), hashlib.sha256).digest()
-    return [digest[0], digest[1]]
+    digest = hmac.new(domain + b"-checksum", bytes(entropy), hashlib.sha256).digest()
+    return int.from_bytes(digest[:2], "big") >> (16 - checksum_bits)
+
+
+def _encode_seed_indexes(entropy, *, word_count, version=UQS_VERSION):
+    """Pack entropy + checksum and unrank them into distinct icon indexes."""
+    entropy_bytes, checksum_bits = _seed_layout(word_count)
+    entropy = bytes(entropy)
+    if len(entropy) != entropy_bytes:
+        raise ValueError(
+            f"a {word_count}-word seed needs {entropy_bytes} entropy bytes"
+        )
+    value = (int.from_bytes(entropy, "big") << checksum_bits) | _compute_checksum(
+        entropy, word_count=word_count, version=version
+    )
+    # Per-position bias note: the phrase set is an injective image of the
+    # uniform entropy, so the phrase carries exactly 8 * entropy_bytes bits,
+    # but the per-POSITION marginals are not uniform — the last icon is
+    # strongly biased because its digit only partly spans its radix. This
+    # is inherent to mixed-radix encoding, leaks nothing beyond the public
+    # structure, and must not be mistaken for an RNG failure.
+    unused = list(range(256))
+    indexes = []
+    for position in range(word_count):
+        # Position 0 consumes the least-significant digit.
+        value, digit = divmod(value, 256 - position)
+        indexes.append(unused.pop(digit))
+    # Cannot fail: the packed value is below the product of the radices.
+    assert value == 0
+    return indexes
+
+
+def _decode_seed_indexes(indexes, *, version=UQS_VERSION):
+    """Rank distinct icon indexes back to entropy bytes, verifying the checksum.
+
+    Returns the entropy bytes, or ``None`` when the phrase is not a valid UQS
+    seed: unsupported length, an index out of range, a repeated icon, a
+    packed value in the unrank headroom that encoding never produces, or a
+    checksum mismatch.
+    """
+    word_count = len(indexes)
+    if word_count not in _SEED_LAYOUT:
+        return None
+    entropy_bytes, checksum_bits = _SEED_LAYOUT[word_count]
+    unused = list(range(256))
+    digits = []
+    for idx in indexes:
+        if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx <= 255:
+            return None
+        try:
+            digit = unused.index(idx)
+        except ValueError:
+            return None  # repeated icon: structurally invalid
+        digits.append(digit)
+        del unused[digit]
+    value = 0
+    for position in range(word_count - 1, -1, -1):
+        value = value * (256 - position) + digits[position]
+    if (value >> checksum_bits) >= 1 << (8 * entropy_bytes):
+        return None  # headroom above the encodable range: never produced
+    checksum = value & ((1 << checksum_bits) - 1)
+    entropy = (value >> checksum_bits).to_bytes(entropy_bytes, "big")
+    expected = _compute_checksum(entropy, word_count=word_count, version=version)
+    if not hmac.compare_digest(
+        checksum.to_bytes(2, "big"), expected.to_bytes(2, "big")
+    ):
+        return None
+    return entropy
 
 
 def verify_checksum(seed, *, version=UQS_VERSION):
-    """Verify the last 2 words are valid checksum words.
+    """Verify that a phrase is a well-formed UQS seed with a valid checksum.
+
+    A valid phrase has a supported length, no repeated icon, and a packed
+    checksum that matches its entropy.
 
     Args:
         seed: List of (index, word) tuples, plain indexes, or words.
 
     Returns:
-        True if the checksum is valid, False otherwise.
+        True if the phrase decodes and its checksum is valid, False otherwise.
     """
     indexes = _to_indexes(seed)
-    if len(indexes) not in (24, 36):
-        return False
-    data = indexes[:-2]
-    expected = _compute_checksum(data, version=version)
-    return hmac.compare_digest(bytes(indexes[-2:]), bytes(expected))
+    return _decode_seed_indexes(indexes, version=version) is not None
 
 
 def validate_seed(seed, *, version=UQS_VERSION) -> bool:
@@ -1151,9 +1249,10 @@ def _build_seed_payload(indexes, passphrase="", *, version=UQS_VERSION) -> bytea
 def get_seed(words, passphrase="", *, version=UQS_VERSION):
     """Derive a 64-byte master seed from words + optional passphrase.
 
-    Only the data words (first 22 or 34) enter the KDF — the 2 checksum
-    words are verified and then stripped so the derived seed depends solely
-    on the random entropy.
+    The distinct icons are first decoded (ranked) back to the entropy bytes
+    (34 for 36 words, 22 for 24) with the packed checksum verified; those
+    entropy bytes alone enter the KDF, so the derived seed depends solely on
+    the random entropy and never on the icon encoding itself.
 
     Security layers:
         1. Checksum verification — rejects corrupted words before derivation
@@ -1188,16 +1287,16 @@ def get_seed(words, passphrase="", *, version=UQS_VERSION):
     domain = _domain_for_version(version)
     indexes = _to_indexes(words)
 
-    # Step 0: Enforce valid length and verify checksum
+    # Step 0: Enforce valid length, then decode the distinct icons back to
+    # the entropy bytes (rejecting a repeated icon or a checksum mismatch).
     if len(indexes) not in (24, 36):
         raise ValueError(f"seed must be 24 or 36 words, got {len(indexes)}")
-    data = indexes[:-2]
-    if not hmac.compare_digest(
-        bytes(indexes[-2:]),
-        bytes(_compute_checksum(data, version=version)),
-    ):
+    entropy = _decode_seed_indexes(indexes, version=version)
+    if entropy is None:
         raise ValueError("invalid seed checksum")
-    indexes = data
+    # Only the recovered entropy enters the KDF, one byte per tagged slot —
+    # the icon encoding and the packed checksum never reach the KDF.
+    indexes = list(entropy)
 
     # Step 1-2: Build a versioned, position-tagged, length-prefixed payload.
     # All intermediate secrets are bytearrays and wiped in the finally
@@ -1425,8 +1524,9 @@ def get_fingerprint(seed, passphrase="", *, bits=32):
 def get_entropy_bits(word_count, passphrase=""):
     """Calculate total entropy in bits from seed words + passphrase.
 
-    Seed entropy: (word_count - 2) × 8 bits. The last 2 words are checksum
-    and don't contribute additional entropy.
+    Seed entropy: entropy_bytes × 8 bits — 272 for 36 words (34 bytes),
+    176 for 24 (22 bytes).
+    The checksum is packed into the icon encoding and adds no entropy.
 
     Passphrase entropy is estimated from its character set:
         - Digits only (0-9):            ~3.32 bits/char
@@ -1440,13 +1540,14 @@ def get_entropy_bits(word_count, passphrase=""):
     the character classes used but not the actual characters.
 
     Args:
-        word_count: Number of seed words (24 or 36, includes 2 checksum).
+        word_count: Number of seed words (24 or 36; the checksum is packed
+            into the icon encoding and spends no words).
         passphrase: Passphrase string.
 
     Returns:
         Estimated total entropy as a float (e.g. 272.0, 305.3).
     """
-    seed_bits = (word_count - 2) * 8  # checksum words don't add entropy
+    seed_bits = (word_count - 2) * 8  # == entropy_bytes * 8; the packed checksum adds none
 
     if not passphrase:
         return float(seed_bits)
