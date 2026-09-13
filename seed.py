@@ -919,7 +919,7 @@ def generate_words(word_count=36, extra_entropy=None, language=None):
         raise RuntimeError(
             "Entropy failed validation "
             f"({health['passed']}/{health['total']} samples passed; "
-            f"{health['required']} required) — RNG source may be compromised. "
+            f"{health['required']} required). The RNG source may be compromised. "
             "Do NOT generate seeds on this system."
         )
 

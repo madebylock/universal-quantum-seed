@@ -1,4 +1,4 @@
-# Universal Quantum Seed — Recovery Guide v1
+# Universal Quantum Seed Recovery Guide v1
 
 **Spec version:** 1.0
 **Domain separator:** `universal-seed-v1`
@@ -10,7 +10,7 @@
 
 ## What You Need
 
-1. Your **24 or 36 words** (or icon indexes 0–255)
+1. Your **24 or 36 words** (or icon indexes 0 to 255)
 2. Your **passphrase** (if one was set; empty string if none)
 3. A system that can compute:
    - Arbitrary-precision integer arithmetic (a 190- or 284-bit integer; Python `int` is enough)
@@ -26,7 +26,7 @@
 
 ### Step 1: Resolve Words to Indexes
 
-Each word maps to an index 0–255. The canonical list is in SPEC.md Section 2.
+Each word maps to an index 0 to 255. The canonical list is in SPEC.md Section 2.
 
 ```
 eye=0, ear=1, nose=2, mouth=3, tongue=4, bone=5, ...
@@ -34,7 +34,7 @@ eye=0, ear=1, nose=2, mouth=3, tongue=4, bone=5, ...
 
 If you wrote your seed in another language, resolve each word through the
 42-language lookup table in `words.py`. A valid v1 phrase never contains the
-same icon twice — if you see a repeat, one of the words is misread. The checksum
+same icon twice. If you see a repeat, one of the words is misread. The checksum
 (Step 3) will catch any other misresolution.
 
 **Result:** A list of N distinct indexes (N = 24 or 36).
@@ -92,13 +92,13 @@ assert checksum == expected, "checksum mismatch: transcription error"
 ```
 
 If the checksum doesn't match, you have a transcription error. Fix it before
-proceeding — incorrect data will derive a wrong (and useless) key.
+proceeding, since incorrect data will derive a wrong (and useless) key.
 
-**Result:** `entropy` — 22 bytes (24 words) or 34 bytes (36 words). Only these
+**Result:** `entropy`, 22 bytes (24 words) or 34 bytes (36 words). Only these
 entropy bytes enter the key derivation pipeline; the icon indexes themselves
 never do.
 
-#### Complete Steps 2–3 as one runnable function
+#### Complete Steps 2 and 3 as one runnable function
 
 ```python
 import hmac, hashlib
@@ -157,8 +157,8 @@ payload += passphrase_bytes
 ```
 
 The domain prefix, entropy-length prefix, field tag, and passphrase-length prefix
-together ensure no two distinct `(entropy, passphrase)` inputs share a payload
-— including across the 24-word and 36-word formats. An empty passphrase `""`
+together ensure no two distinct `(entropy, passphrase)` inputs share a payload,
+including across the 24-word and 36-word formats. An empty passphrase `""`
 produces the same result as no passphrase.
 
 ### Step 5: HKDF-Extract (RFC 5869)
@@ -323,7 +323,7 @@ was successful.
 
 ---
 
-## Quick Reference — All Domain Strings
+## Quick Reference: All Domain Strings
 
 | Stage | String | Usage |
 |:---|:---|:---|
@@ -383,7 +383,7 @@ Phrase indexes: [222, 53, 187, 179, 67, 73, 232, 167, 154, 189, 2, 214,
 Fingerprint:    0960B7F0
 ```
 
-(Position 2 illustrates the rank: its digit is 186 — icon 187 minus the one
+(Position 2 illustrates the rank: its digit is 186, which is icon 187 minus the one
 earlier icon, 53, that is smaller than it.)
 
 See `test-vectors.json` for the full set (entropy, phrase, master seed and
@@ -400,8 +400,8 @@ This guide describes v1 of the Universal Quantum Seed. The compatibility contrac
 > No parameter may be changed within v1. If parameters change, a new version
 > with a new domain separator and spec folder MUST be created.
 
-The distinct-icon encoding (Steps 2–3) replaced the pre-release "N−2 data
+The distinct-icon encoding (Steps 2 and 3) replaced the pre-release "N−2 data
 words + 2 checksum words" layout in place, before any official release. Phrases
 written down by pre-release builds are not valid v1 phrases and there is no
-legacy decode path; the KDF (Steps 4–8) and every domain string are unchanged,
+legacy decode path; the KDF (Steps 4 to 8) and every domain string are unchanged,
 so the master seed for a given entropy is identical under both layouts.

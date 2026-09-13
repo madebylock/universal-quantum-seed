@@ -8,7 +8,7 @@
 
 [![License: PolyForm Shield 1.0.0](https://img.shields.io/badge/License-PolyForm%20Shield%201.0.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Quantum Safe](https://img.shields.io/badge/Quantum-Safe-00d4aa?style=for-the-badge)](#-quantum-security)
-[![Hybrid Crypto](https://img.shields.io/badge/Hybrid-Classical_+_PQ-ff6b6b?style=for-the-badge)](#tier-3--hybrid-classical--post-quantum)
+[![Hybrid Crypto](https://img.shields.io/badge/Hybrid-Classical_+_PQ-ff6b6b?style=for-the-badge)](#tier-3-hybrid-classical--post-quantum)
 [![Languages](https://img.shields.io/badge/Languages-42-blueviolet?style=for-the-badge)](#-supported-languages)
 [![Icons](https://img.shields.io/badge/Visual_Icons-256-orange?style=for-the-badge)](#-visual-icon-library)
 [![Entropy](https://img.shields.io/badge/Entropy-272_bit-brightgreen?style=for-the-badge)](#-entropy)
@@ -16,7 +16,7 @@
 
 <br>
 
-*Write your seed in any language. Recover it in any other. Or skip words entirely — select the icons.*
+*Write your seed in any language. Recover it in any other. Or skip words entirely and select the icons.*
 
 <br>
 
@@ -46,18 +46,18 @@ result differs, so source and generated data remain reviewable together.
 
 ## Quantum Security
 
-The **36-word seed is quantum-safe by design**. Its 272-bit entropy survives Grover's algorithm with 136-bit post-quantum security — well above the 128-bit floor. The 24-word compact format (176-bit) is designed for classical use; for quantum-safe key derivation, **use 36 words**.
+The **36-word seed is quantum-safe by design**. Its 272-bit entropy survives Grover's algorithm with 136-bit post-quantum security, well above the 128-bit floor. The 24-word compact format (176-bit) is designed for classical use; for quantum-safe key derivation, **use 36 words**.
 
-Beyond the quantum-resistant seed, this system includes a **complete three-tier cryptography stack** — classical, post-quantum, and hybrid — all pure Python with zero external crypto dependencies. Every algorithm is derived deterministically from the same master seed using HKDF domain separation.
+Beyond the quantum-resistant seed, this system includes a **complete three-tier cryptography stack** (classical, post-quantum, and hybrid), all pure Python with zero external crypto dependencies. Every algorithm is derived deterministically from the same master seed using HKDF domain separation.
 
-### Tier 1 — Classical
+### Tier 1: Classical
 
 | Algorithm | Standard | Security | Public Key | Use |
 |:---|:---:|:---:|:---:|:---|
 | **Ed25519** | RFC 8032 | ~128-bit | 32 B | Digital signatures |
 | **X25519** | RFC 7748 | ~128-bit | 32 B | Diffie-Hellman key exchange |
 
-### Tier 2 — Post-Quantum
+### Tier 2: Post-Quantum
 
 | Algorithm | Standard | Security | Public Key | Signature / CT | Assumption |
 |:---|:---:|:---:|:---:|:---:|:---|
@@ -65,18 +65,18 @@ Beyond the quantum-resistant seed, this system includes a **complete three-tier 
 | **SLH-DSA-SHAKE-128s** (SPHINCS+) | FIPS 205 | Level 1 (128-bit PQ) | 32 B | 7,856 B sig | Hash-only (SHAKE-256) |
 | **ML-KEM-768** (Kyber) | FIPS 203 | Level 3 (192-bit PQ) | 1,184 B | 1,088 B ct | Lattice (MLWE) |
 
-### Tier 3 — Hybrid (Classical + Post-Quantum)
+### Tier 3: Hybrid (Classical + Post-Quantum)
 
-Hybrid schemes combine a classical and post-quantum algorithm in **AND-composition** — security holds as long as *either* component remains unbroken. This provides defense in depth during the cryptographic transition period.
+Hybrid schemes combine a classical and post-quantum algorithm in **AND-composition**: security holds as long as *either* component remains unbroken. This provides defense in depth during the cryptographic transition period.
 
 | Algorithm | Components | Public Key | Signature / CT | Design |
 |:---|:---|:---:|:---:|:---|
 | **Hybrid-DSA-65** | Ed25519 + ML-DSA-65 | 1,984 B | 3,373 B sig | Both must verify |
 | **Hybrid-KEM-768** | X25519 + ML-KEM-768 | 1,216 B | 1,120 B ct | Secrets combined via HKDF |
 
-**Hybrid-DSA-65** — Both Ed25519 and ML-DSA-65 independently sign and verify every message. The Ed25519 component signs a domain-prefixed message (`hybrid-dsa-v1 + ctx + message`) to prevent **signature stripping attacks** — an adversary cannot extract the Ed25519 signature and present it as a valid standalone signature.
+**Hybrid-DSA-65:** Both Ed25519 and ML-DSA-65 independently sign and verify every message. The Ed25519 component signs a domain-prefixed message (`hybrid-dsa-v1 + ctx + message`) to prevent **signature stripping attacks**: an adversary cannot extract the Ed25519 signature and present it as a valid standalone signature.
 
-**Hybrid-KEM-768** — X25519 ephemeral DH and ML-KEM-768 encapsulation each produce a shared secret. Both are combined via **ciphertext-bound HKDF**: the salt includes `SHA-256(x25519_ct || ml_kem_ct)`, preventing ciphertext substitution attacks. The domain string `hybrid-kem-v1` provides protocol separation.
+**Hybrid-KEM-768:** X25519 ephemeral DH and ML-KEM-768 encapsulation each produce a shared secret. Both are combined via **ciphertext-bound HKDF**: the salt includes `SHA-256(x25519_ct || ml_kem_ct)`, preventing ciphertext substitution attacks. The domain string `hybrid-kem-v1` provides protocol separation.
 
 ```python
 from seed import generate_words, get_seed, generate_quantum_keypair
@@ -91,10 +91,10 @@ sk, pk = generate_quantum_keypair(seed, "slh-dsa-shake-128s")   # NIST Level 1 h
 # Post-quantum key encapsulation
 ek, dk = generate_quantum_keypair(seed, "ml-kem-768")           # NIST Level 3 lattice KEM
 
-# Hybrid signatures — Ed25519 + ML-DSA-65
+# Hybrid signatures: Ed25519 + ML-DSA-65
 sk, pk = generate_quantum_keypair(seed, "hybrid-dsa-65")
 
-# Hybrid key encapsulation — X25519 + ML-KEM-768
+# Hybrid key encapsulation: X25519 + ML-KEM-768
 ek, dk = generate_quantum_keypair(seed, "hybrid-kem-768")
 
 # Default is ML-DSA-65
@@ -125,7 +125,7 @@ shared_secret_receiver = hybrid_kem_decaps(dk, ct)
 assert shared_secret_sender == shared_secret_receiver  # 32-byte shared secret
 ```
 
-Classical ECC keys (secp256k1, Ed25519) will be broken by Shor's algorithm on quantum computers. The hybrid and post-quantum algorithms ensure your seed remains secure and usable in a post-quantum world — while the classical components provide a fallback if post-quantum assumptions are ever weakened.
+Classical ECC keys (secp256k1, Ed25519) will be broken by Shor's algorithm on quantum computers. The hybrid and post-quantum algorithms ensure your seed remains secure and usable in a post-quantum world, while the classical components provide a fallback if post-quantum assumptions are ever weakened.
 
 <br>
 
@@ -141,15 +141,15 @@ The Universal Quantum Seed takes a fundamentally different approach:
 | Words per position | 1 | **Multiple** (synonyms, slang, abbreviations) |
 | Languages | 10 | **42** |
 | Visual recovery | :x: | :white_check_mark: **Select icons directly** |
-| Checksum | 4–8 bit | :white_check_mark: **12-bit (36w) / 14-bit (24w)** — packed into the icons, no checksum words |
-| Repeated words | :warning: Allowed | :white_check_mark: **Never** — every icon in a phrase is distinct |
-| Paper backup recognizable as crypto? | :warning: Yes | :shield: **No** — looks like random notes |
+| Checksum | 4 to 8 bit | :white_check_mark: **12-bit (36w) / 14-bit (24w)**, packed into the icons, no checksum words |
+| Repeated words | :warning: Allowed | :white_check_mark: **Never**: every icon in a phrase is distinct |
+| Paper backup recognizable as crypto? | :warning: Yes | :shield: **No**, it looks like random notes |
 | Mixed-language backup | :x: | :white_check_mark: Write in any combination |
 | Accent/diacritic flexible | :x: | :white_check_mark: `corazón` = `corazon` |
 | Emoji input | :x: | :white_check_mark: Paste :dog2: :sunny: :key: directly |
 | Key stretching | PBKDF2 | **PBKDF2 + Argon2id** (chained, defense in depth) |
-| Passphrase support | :white_check_mark: | :white_check_mark: **Second factor** — same seed + different passphrase = unrelated keys |
-| Multiple accounts per seed | :x: One seed = one wallet | :white_check_mark: **Unlimited hidden profiles** — one seed, many accounts |
+| Passphrase support | :white_check_mark: | :white_check_mark: **Second factor**: same seed + different passphrase = unrelated keys |
+| Multiple accounts per seed | :x: One seed = one wallet | :white_check_mark: **Unlimited hidden profiles**: one seed, many accounts |
 
 <br>
 
@@ -165,23 +165,23 @@ The Universal Quantum Seed takes a fundamentally different approach:
 <table>
 <tr>
 <td width="60" align="center"><h3>1</h3></td>
-<td><b>Generate</b> — Cryptographically secure random positions selected from 256 icons using defense-in-depth entropy collection</td>
+<td><b>Generate</b>: cryptographically secure random positions selected from 256 icons using defense-in-depth entropy collection</td>
 </tr>
 <tr>
 <td align="center"><h3>2</h3></td>
-<td><b>Display</b> — Each position shows its visual icon alongside accepted words in the user's language</td>
+<td><b>Display</b>: each position shows its visual icon alongside accepted words in the user's language</td>
 </tr>
 <tr>
 <td align="center"><h3>3</h3></td>
-<td><b>Backup</b> — Write down 36 words in whatever language and form you prefer</td>
+<td><b>Backup</b>: write down 36 words in whatever language and form you prefer</td>
 </tr>
 <tr>
 <td align="center"><h3>4</h3></td>
-<td><b>Derive</b> — Seed + optional passphrase are hardened through PBKDF2 + Argon2id into a 512-bit master key</td>
+<td><b>Derive</b>: seed + optional passphrase are hardened through PBKDF2 + Argon2id into a 512-bit master key</td>
 </tr>
 <tr>
 <td align="center"><h3>5</h3></td>
-<td><b>Recover</b> — Type your words in any supported language, or select the 36 icons visually</td>
+<td><b>Recover</b>: type your words in any supported language, or select the 36 icons visually</td>
 </tr>
 </table>
 
@@ -195,14 +195,14 @@ The system supports two entropy configurations:
 
 | Configuration | Words | Icons + Checksum | Entropy | Post-Quantum | Use Case |
 |:---|:---:|:---:|:---:|:---:|:---|
-| **Standard (Quantum-Safe)** | 36 | 36 distinct + 12-bit packed | 272-bit | 136-bit (Grover) | Quantum-safe — required for post-quantum key derivation |
-| **Compact (Classical)** | 24 | 24 distinct + 14-bit packed | 176-bit | 88-bit (Grover) | Classical security — sufficient for traditional crypto |
+| **Standard (Quantum-Safe)** | 36 | 36 distinct + 12-bit packed | 272-bit | 136-bit (Grover) | Quantum-safe, required for post-quantum key derivation |
+| **Compact (Classical)** | 24 | 24 distinct + 14-bit packed | 176-bit | 88-bit (Grover) | Classical security, sufficient for traditional crypto |
 
 </div>
 
 <br>
 
-**272-bit** exceeds the strongest entropy level used in cryptocurrency. Brute-forcing a 272-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding, and pack an HMAC-SHA-256-based checksum (12-bit for 36 words, 14-bit for 24 words) into the icon encoding itself for error detection — no separate checksum words, and no icon ever repeats within a phrase. The false-positive rate is 1-in-4,096 (36 words) / 1-in-16,384 (24 words), still 16–64× stronger than BIP39's 8-bit 24-word checksum; a repeated icon is rejected structurally before the checksum runs.
+**272-bit** exceeds the strongest entropy level used in cryptocurrency. Brute-forcing a 272-bit seed would require more energy than the sun produces in its lifetime. Both configurations use the same 256-position icon set with full positional encoding, and pack an HMAC-SHA-256-based checksum (12-bit for 36 words, 14-bit for 24 words) into the icon encoding itself for error detection: no separate checksum words, and no icon ever repeats within a phrase. The false-positive rate is 1-in-4,096 (36 words) / 1-in-16,384 (24 words), still 16 to 64× stronger than BIP39's 8-bit 24-word checksum; a repeated icon is rejected structurally before the checksum runs.
 
 > **For quantum-safe applications, always use the 36-word format.** The 36-word seed provides 272-bit entropy (136-bit post-quantum), which exceeds NIST Level 3 (ML-DSA-65) and Level 5 requirements. The 24-word compact format (176-bit / 88-bit post-quantum) is suitable for classical cryptographic use only.
 
@@ -214,11 +214,11 @@ The system supports two entropy configurations:
 | **Universal Quantum Seed (36 words)** | **272-bit** | **136-bit (Grover)** | **Quantum-safe tier** |
 | **Universal Quantum Seed + passphrase** | **272+ bits** | **136+ bits** | **Second factor expands the keyspace further** |
 
-The 36-word seed retains **136-bit security** even against a quantum computer running Grover's algorithm — well above the 128-bit post-quantum threshold. The 24-word format provides strong classical security (176-bit) but is not recommended for post-quantum key derivation.
+The 36-word seed retains **136-bit security** even against a quantum computer running Grover's algorithm, well above the 128-bit post-quantum threshold. The 24-word format provides strong classical security (176-bit) but is not recommended for post-quantum key derivation.
 
 <br>
 
-## Seed Generation — Defense-in-Depth Entropy
+## Seed Generation: Defense-in-Depth Entropy
 
 Every generated seed mixes entropy from **multiple sources** through SHA-512 (a cryptographic randomness extractor). Even if some sources are weak, the output remains cryptographically strong as long as **any single source** provides real entropy. The OS CSPRNG alone is sufficient; additional sources provide defense in depth.
 
@@ -239,33 +239,33 @@ Every generated seed mixes entropy from **multiple sources** through SHA-512 (a 
 
 All sources are combined into a single SHA-512 pool, then a final `secrets.token_bytes` call is folded in to guarantee the output is **at minimum** as strong as the OS CSPRNG alone.
 
-### Entropy Validation — Verified Before Use
+### Entropy Validation: Verified Before Use
 
 Every call to `generate_words()` validates its entropy **before** using it for seed generation. Four statistical tests (based on NIST SP 800-22) are run on every sample:
 
 | Test | What It Catches |
 |:---|:---|
-| **Monobit** | Bit bias — rejects if 0s and 1s aren't ~50/50 |
-| **Chi-squared** | Byte frequency bias — rejects if byte values aren't uniformly distributed |
-| **Runs** | Stuck patterns — rejects if bit transitions are predictable |
-| **Autocorrelation** | Bit correlations — rejects if bit positions are dependent (Bonferroni-corrected) |
+| **Monobit** | Bit bias: rejects if 0s and 1s aren't ~50/50 |
+| **Chi-squared** | Byte frequency bias: rejects if byte values aren't uniformly distributed |
+| **Runs** | Stuck patterns: rejects if bit transitions are predictable |
+| **Autocorrelation** | Bit correlations: rejects if bit positions are dependent (Bonferroni-corrected) |
 
-If any test fails, the entropy is **discarded and regenerated** — up to 10 attempts. Only entropy that passes all four tests is ever used. If all 10 attempts fail (indicating a broken or compromised RNG), seed generation raises a `RuntimeError` and refuses to produce a seed.
+If any test fails, the entropy is **discarded and regenerated**, up to 10 attempts. Only entropy that passes all four tests is ever used. If all 10 attempts fail (indicating a broken or compromised RNG), seed generation raises a `RuntimeError` and refuses to produce a seed.
 
-This means every seed generated by this system is backed by **statistically validated** entropy — not just trusted blindly from the OS.
+This means every seed generated by this system is backed by **statistically validated** entropy, not just trusted blindly from the OS.
 
 ### Why Multiple Sources?
 
 A single CSPRNG (like `secrets`) is already sufficient for most applications. We go further because:
 
-- **Defense in depth** — if one source has a flaw, the others compensate
-- **Hardware diversity** — CPU jitter and thread scheduling capture physical nondeterminism independent from the OS random pool
-- **User involvement** — mouse entropy gives users tangible participation in their own security
-- **Provable minimum** — the SHA-512 mixing ensures the output has *at least* as much entropy as the best single source
+- **Defense in depth**: if one source has a flaw, the others compensate
+- **Hardware diversity**: CPU jitter and thread scheduling capture physical nondeterminism independent from the OS random pool
+- **User involvement**: mouse entropy gives users tangible participation in their own security
+- **Provable minimum**: the SHA-512 mixing ensures the output has *at least* as much entropy as the best single source
 
 <br>
 
-## Key Derivation Pipeline — 6 Hardening Layers
+## Key Derivation Pipeline: 6 Hardening Layers
 
 After generation, the seed is transformed into a 512-bit master key through a **6-layer hardening pipeline**. Each layer addresses a specific attack vector:
 
@@ -274,7 +274,7 @@ After generation, the seed is transformed into a 512-bit master key through a **
          │
     ┌────▼─────────────────────┐
     │ 0. Checksum Verification │  Rejects any repeated icon, then verifies the
-    │    & Decoding            │  packed checksum — only seed entropy enters KDF
+    │    & Decoding            │  packed checksum. Only seed entropy enters KDF
     └────┬─────────────────────┘
          │
     ┌────▼─────────────────────┐
@@ -303,7 +303,7 @@ After generation, the seed is transformed into a 512-bit master key through a **
     └──────────────────────────┘
 ```
 
-### Layer 1 — Length-Prefixed Payload
+### Layer 1: Length-Prefixed Payload
 
 Each variable-length field is domain- or length-prefixed so the boundary
 between the index region and the passphrase region is unambiguous:
@@ -320,13 +320,13 @@ payload = b"universal-seed-v1-seed-payload-v1"
 **Why:** The `(pos, icon)` pairs cryptographically bind each icon to its slot
 (reordering = different key). The version tag, word-count prefix, field tag,
 and passphrase-length prefix together ensure no two distinct
-`(indexes, passphrase)` inputs share a payload — including across the 24-word
+`(indexes, passphrase)` inputs share a payload, including across the 24-word
 and 36-word formats. The passphrase acts as a **second factor** (something
 you *know*), and brute-forcing it costs ~2 seconds per attempt (full PBKDF2 +
 Argon2id chain). NFKC normalization keeps the same visual passphrase
 producing the same bytes on macOS NFD vs Windows NFC.
 
-### Layer 2 — HKDF-Extract (RFC 5869)
+### Layer 2: HKDF-Extract (RFC 5869)
 
 The combined payload (seed + passphrase) is collapsed into a fixed-size **pseudorandom key (PRK)** using HMAC-SHA512 with a domain separator (`universal-seed-v1`):
 
@@ -334,11 +334,11 @@ The combined payload (seed + passphrase) is collapsed into a fixed-size **pseudo
 PRK = HMAC-SHA512(key="universal-seed-v1", msg=payload)
 ```
 
-**Why:** HKDF-Extract is a proven randomness extractor. It takes the variable-length payload (which may have structure — repeating icons, short seeds, passphrase) and produces a uniformly distributed 512-bit key. The domain separator ensures that keys derived by this system can **never collide** with keys from any other system, even if the input data is identical.
+**Why:** HKDF-Extract is a proven randomness extractor. It takes the variable-length payload (which may have structure: repeating icons, short seeds, passphrase) and produces a uniformly distributed 512-bit key. The domain separator ensures that keys derived by this system can **never collide** with keys from any other system, even if the input data is identical.
 
-### Layer 3 — Chained Key Stretching (PBKDF2 → Argon2id)
+### Layer 3: Chained Key Stretching (PBKDF2 → Argon2id)
 
-The PRK is stretched through **two KDFs in series** — PBKDF2-SHA512 first, then Argon2id on top. Both always run; an attacker must break both to recover the key.
+The PRK is stretched through **two KDFs in series**: PBKDF2-SHA512 first, then Argon2id on top. Both always run; an attacker must break both to recover the key.
 
 | Parameter | Stage 1: PBKDF2-SHA512 | Stage 2: Argon2id |
 |:---|:---|:---|
@@ -354,15 +354,15 @@ stage1    = PBKDF2-SHA512(PRK, salt="universal-seed-v1-stretch-pbkdf2", rounds=6
 stretched = Argon2id(secret=stage1, salt="universal-seed-v1-stretch-argon2id")
 ```
 
-**Why:** Defense in depth. PBKDF2-SHA512 provides a proven, NIST-approved baseline that resists brute force through sheer iteration count. Argon2id adds memory-hardness on top, making GPU/ASIC parallelization impractical — each attempt requires 64 MiB of RAM. If a vulnerability were ever found in one algorithm, the other still protects the key.
+**Why:** Defense in depth. PBKDF2-SHA512 provides a proven, NIST-approved baseline that resists brute force through sheer iteration count. Argon2id adds memory-hardness on top, making GPU/ASIC parallelization impractical, since each attempt requires 64 MiB of RAM. If a vulnerability were ever found in one algorithm, the other still protects the key.
 
 Argon2id is the **winner of the Password Hashing Competition** (2015) and the current OWASP recommendation for high-value targets.
 
 ```bash
-pip install argon2-cffi   # optional — ~100x faster, pure Python fallback included
+pip install argon2-cffi   # optional: ~100x faster, pure Python fallback included
 ```
 
-### Layer 4 — HKDF-Expand (RFC 5869)
+### Layer 4: HKDF-Expand (RFC 5869)
 
 The stretched key is expanded into the final 64-byte master key using HKDF-Expand with a domain-specific info string:
 
@@ -374,7 +374,7 @@ master_key = HKDF-Expand(PRK=stretched, info="universal-seed-v1-master", length=
 
 <br>
 
-## Passphrase — Optional Second Factor
+## Passphrase: Optional Second Factor
 
 The passphrase acts as a **second factor** that makes the derived key dependent on something the user **knows**, in addition to the seed they **have**.
 
@@ -388,7 +388,7 @@ The passphrase acts as a **second factor** that makes the derived key dependent 
 Key properties:
 - The passphrase **only affects the derived key and fingerprint**, not the displayed words/icons
 - An empty passphrase is valid and produces a deterministic key
-- The passphrase goes through the full PBKDF2 + Argon2id pipeline — brute-forcing is expensive
+- The passphrase goes through the full PBKDF2 + Argon2id pipeline, so brute-forcing is expensive
 - Entropy from the passphrase **adds to** the seed entropy (272 + passphrase bits)
 
 ### Entropy Estimation
@@ -418,12 +418,12 @@ Passphrase entropy is estimated from the character set used:
 
 <br>
 
-## Hidden Profiles — Multiple Accounts, One Seed
+## Hidden Profiles: Multiple Accounts, One Seed
 
-Hidden profiles let you derive **unlimited independent keys** from a single master key using profile passwords. Each profile password produces a completely unrelated key — and without the password, no one can detect that the profile exists.
+Hidden profiles let you derive **unlimited independent keys** from a single master key using profile passwords. Each profile password produces a completely unrelated key, and without the password, no one can detect that the profile exists.
 
 ```
-Seed → Master Key (expensive KDF — runs once)
+Seed → Master Key (expensive KDF, runs once)
   ├── default (no password) = master key
   ├── "personal"  → independent 64-byte key
   ├── "business"  → independent 64-byte key
@@ -445,7 +445,7 @@ default  = get_profile(seed, "")            # empty = master key itself
 | Property | Detail |
 |:---|:---|
 | Algorithm | HMAC-SHA512(master_key, domain + password) |
-| Speed | Instant — single HMAC, no KDF (master key is already hardened) |
+| Speed | Instant: single HMAC, no KDF (master key is already hardened) |
 | Deterministic | Same password always produces the same key |
 | Independent | Profiles cannot be derived from each other |
 | Hidden | No way to enumerate how many profiles exist |
@@ -457,12 +457,12 @@ default  = get_profile(seed, "")            # empty = master key itself
 
 ## Using seed.py in Python
 
-Everything lives in a single file — `seed.py`. Import it and you get seed generation, key derivation, word lookup, and entropy estimation.
+Everything lives in a single file, `seed.py`. Import it and you get seed generation, key derivation, word lookup, and entropy estimation.
 
 ### Installation
 
 ```bash
-pip install argon2-cffi   # optional — ~100x faster, pure Python fallback included
+pip install argon2-cffi   # optional: ~100x faster, pure Python fallback included
 ```
 
 No external dependencies required. `seed.py` uses only the Python standard library and the bundled `crypto/argon2.py` module. Installing `argon2-cffi` is optional but recommended for performance (~100x faster Argon2id).
@@ -484,17 +484,17 @@ words = generate_words(36, language="french")
 get_languages()
 # → [("english", "English"), ("arabic", "العربية"), ("french", "Français"), ...]
 
-# Derive the master seed — pass the words directly
+# Derive the master seed: pass the words directly
 seed = get_seed(words)                  # 64-byte master seed
 fp   = get_fingerprint(words)           # "A3F1B2C4"
 
 # Verify the packed checksum (a repeated icon is rejected first)
 verify_checksum(words)                  # True
 
-# With a passphrase (second factor — same words, different passphrase = different seed)
+# With a passphrase (second factor: same words, different passphrase = different seed)
 seed = get_seed(words, "my secret passphrase")
 
-# Hidden profiles — multiple accounts from one seed
+# Hidden profiles: multiple accounts from one seed
 from seed import get_profile
 personal = get_profile(seed, "personal")       # independent 64-byte key
 business = get_profile(seed, "business")       # completely unrelated key
@@ -526,7 +526,7 @@ resolve("perro")     # → 15  (Spanish)
 resolve("犬")        # → 15  (Japanese)
 resolve("🐕")        # → 15  (emoji)
 resolve("corazón")   # → 8   (with accent)
-resolve("corazon")   # → 8   (without accent — same result)
+resolve("corazon")   # → 8   (without accent, same result)
 resolve("собака")    # → 15  (Russian)
 resolve("unknown")   # → None
 
@@ -584,10 +584,10 @@ Four statistical tests based on NIST SP 800-22:
 
 | Test | What It Detects |
 |:---|:---|
-| **Monobit** | Bit bias — 0s and 1s should be ~50/50 |
-| **Chi-squared** | Byte frequency bias — all 256 values should appear uniformly |
-| **Runs** | Stuck patterns — bit transitions should be random |
-| **Autocorrelation** | Bit correlations — each bit position should be independent |
+| **Monobit** | Bit bias: 0s and 1s should be ~50/50 |
+| **Chi-squared** | Byte frequency bias: all 256 values should appear uniformly |
+| **Runs** | Stuck patterns: bit transitions should be random |
+| **Autocorrelation** | Bit correlations: each bit position should be independent |
 
 The test app (`examples/universal.py`) includes a `RandomnessDialog` window that runs these tests with a progress bar and displays checkmarks for each passing test.
 
@@ -604,26 +604,26 @@ print(kdf_info())
 
 | Function | Signature | Returns |
 |:---|:---|:---|
-| `generate_words` | `generate_words(word_count=36, extra_entropy=None, language=None)` | `list[(int, str)]` — index/word pairs (all distinct; checksum packed into the encoding) |
-| `verify_checksum` | `verify_checksum(words)` | `bool` — True if every icon is distinct and the packed checksum verifies |
-| `get_seed` | `get_seed(words, passphrase="")` | `bytes` — 64-byte master seed (checksum verified) |
-| `get_profile` | `get_profile(seed, profile_password)` | `bytes` — 64-byte profile key (instant HMAC, no KDF) |
-| `get_fingerprint` | `get_fingerprint(seed, passphrase="", *, bits=32)` | `str` — uppercase hex; `bits` ∈ {32, 64, 128, 256} (default 32 → 8 chars) |
-| `get_entropy_bits` | `get_entropy_bits(word_count, passphrase="")` | `float` — estimated total entropy |
+| `generate_words` | `generate_words(word_count=36, extra_entropy=None, language=None)` | `list[(int, str)]`: index/word pairs (all distinct; checksum packed into the encoding) |
+| `verify_checksum` | `verify_checksum(words)` | `bool`: True if every icon is distinct and the packed checksum verifies |
+| `get_seed` | `get_seed(words, passphrase="")` | `bytes`: 64-byte master seed (checksum verified) |
+| `get_profile` | `get_profile(seed, profile_password)` | `bytes`: 64-byte profile key (instant HMAC, no KDF) |
+| `get_fingerprint` | `get_fingerprint(seed, passphrase="", *, bits=32)` | `str`: uppercase hex; `bits` ∈ {32, 64, 128, 256} (default 32 → 8 chars) |
+| `get_entropy_bits` | `get_entropy_bits(word_count, passphrase="")` | `float`: estimated total entropy |
 | `resolve` | `resolve(word_or_list, strict=False)` | `str` → `int \| None`; `list` → `(indexes, errors)` |
-| `search` | `search(prefix, limit=10)` | `list[(str, int)]` — word/index pairs |
-| `verify_randomness` | `verify_randomness(sample_bytes=None, sample_size=2048, num_samples=5)` | `dict` — `{"pass": bool, "tests": [...], "summary": str}` |
+| `search` | `search(prefix, limit=10)` | `list[(str, int)]`: word/index pairs |
+| `verify_randomness` | `verify_randomness(sample_bytes=None, sample_size=2048, num_samples=5)` | `dict`: `{"pass": bool, "tests": [...], "summary": str}` |
 | `mouse_entropy` | class | Entropy collection pool |
-| `get_languages` | `get_languages()` | `list[(str, str)]` — (code, label) pairs |
-| `get_quantum_seed` | `get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0)` | `bytes` — raw quantum seed material (32–96 bytes) |
-| `generate_quantum_keypair` | `generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0)` | `tuple[bytes, bytes]` — (secret_key, public_key) |
-| `hybrid_dsa_keygen` | `hybrid_dsa_keygen(seed_64B)` | `tuple[bytes, bytes]` — (4,096B sk, 1,984B pk) |
-| `hybrid_dsa_sign` | `hybrid_dsa_sign(message, sk, ctx=b"")` | `bytes` — 3,373B hybrid signature |
-| `hybrid_dsa_verify` | `hybrid_dsa_verify(message, sig, pk, ctx=b"")` | `bool` — True if both Ed25519 AND ML-DSA verify |
-| `hybrid_kem_keygen` | `hybrid_kem_keygen(seed_96B)` | `tuple[bytes, bytes]` — (1,216B ek, 2,432B dk) |
-| `hybrid_kem_encaps` | `hybrid_kem_encaps(ek, randomness=None)` | `tuple[bytes, bytes]` — (1,120B ct, 32B shared_secret) |
-| `hybrid_kem_decaps` | `hybrid_kem_decaps(dk, ct)` | `bytes` — 32B shared secret |
-| `kdf_info` | `kdf_info()` | `str` — chained KDF pipeline description |
+| `get_languages` | `get_languages()` | `list[(str, str)]`: (code, label) pairs |
+| `get_quantum_seed` | `get_quantum_seed(master_key, algorithm="ml-dsa-65", key_index=0)` | `bytes`: raw quantum seed material (32 to 96 bytes) |
+| `generate_quantum_keypair` | `generate_quantum_keypair(master_key, algorithm="ml-dsa-65", key_index=0)` | `tuple[bytes, bytes]`: (secret_key, public_key) |
+| `hybrid_dsa_keygen` | `hybrid_dsa_keygen(seed_64B)` | `tuple[bytes, bytes]`: (4,096B sk, 1,984B pk) |
+| `hybrid_dsa_sign` | `hybrid_dsa_sign(message, sk, ctx=b"")` | `bytes`: 3,373B hybrid signature |
+| `hybrid_dsa_verify` | `hybrid_dsa_verify(message, sig, pk, ctx=b"")` | `bool`: True if both Ed25519 AND ML-DSA verify |
+| `hybrid_kem_keygen` | `hybrid_kem_keygen(seed_96B)` | `tuple[bytes, bytes]`: (1,216B ek, 2,432B dk) |
+| `hybrid_kem_encaps` | `hybrid_kem_encaps(ek, randomness=None)` | `tuple[bytes, bytes]`: (1,120B ct, 32B shared_secret) |
+| `hybrid_kem_decaps` | `hybrid_kem_decaps(dk, ct)` | `bytes`: 32B shared secret |
+| `kdf_info` | `kdf_info()` | `str`: chained KDF pipeline description |
 
 <br>
 
@@ -691,20 +691,20 @@ print(kdf_info())
 
 <br>
 
-**10 scripts supported** — Latin · Arabic · Hebrew · Devanagari · Bengali · Gurmukhi · Tamil · Telugu · Thai · CJK
+**10 scripts supported**: Latin · Arabic · Hebrew · Devanagari · Bengali · Gurmukhi · Tamil · Telugu · Thai · CJK
 
 <br>
 
 ## Visual Icon Library
 
-**256 universally recognizable icons** — a dog is a dog everywhere, the sun is the sun, a key is a key.
+**256 universally recognizable icons**: a dog is a dog everywhere, the sun is the sun, a key is a key.
 
 All icons are available as **PNG** (256×256, transparent background) in `visuals/png/` and **SVG** in `visuals/svg/`, named by index (`0.png` through `255.png`).
 
 <br>
 
 <details>
-<summary><b>Body Parts</b> &nbsp;·&nbsp; <code>0 – 14</code></summary>
+<summary><b>Body Parts</b> &nbsp;·&nbsp; <code>0 to 14</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -721,7 +721,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Mammals</b> &nbsp;·&nbsp; <code>15 – 37</code></summary>
+<summary><b>Mammals</b> &nbsp;·&nbsp; <code>15 to 37</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -742,7 +742,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Birds</b> &nbsp;·&nbsp; <code>38 – 44</code></summary>
+<summary><b>Birds</b> &nbsp;·&nbsp; <code>38 to 44</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -755,7 +755,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Reptiles & Amphibians</b> &nbsp;·&nbsp; <code>45 – 49</code></summary>
+<summary><b>Reptiles & Amphibians</b> &nbsp;·&nbsp; <code>45 to 49</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -767,7 +767,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Aquatic</b> &nbsp;·&nbsp; <code>50 – 55</code></summary>
+<summary><b>Aquatic</b> &nbsp;·&nbsp; <code>50 to 55</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -779,7 +779,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Bugs & Crawlers</b> &nbsp;·&nbsp; <code>56 – 62</code></summary>
+<summary><b>Bugs & Crawlers</b> &nbsp;·&nbsp; <code>56 to 62</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -792,7 +792,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Sky & Weather</b> &nbsp;·&nbsp; <code>63 – 78</code></summary>
+<summary><b>Sky & Weather</b> &nbsp;·&nbsp; <code>63 to 78</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -809,7 +809,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Landscapes</b> &nbsp;·&nbsp; <code>79 – 84</code></summary>
+<summary><b>Landscapes</b> &nbsp;·&nbsp; <code>79 to 84</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -821,7 +821,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Plants & Fungi</b> &nbsp;·&nbsp; <code>85 – 90</code></summary>
+<summary><b>Plants & Fungi</b> &nbsp;·&nbsp; <code>85 to 90</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -833,7 +833,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Fruits</b> &nbsp;·&nbsp; <code>91 – 104</code></summary>
+<summary><b>Fruits</b> &nbsp;·&nbsp; <code>91 to 104</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -849,7 +849,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Vegetables</b> &nbsp;·&nbsp; <code>105 – 112</code></summary>
+<summary><b>Vegetables</b> &nbsp;·&nbsp; <code>105 to 112</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -862,7 +862,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Prepared Food</b> &nbsp;·&nbsp; <code>113 – 120</code></summary>
+<summary><b>Prepared Food</b> &nbsp;·&nbsp; <code>113 to 120</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -875,7 +875,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Food & Drink</b> &nbsp;·&nbsp; <code>121 – 128</code></summary>
+<summary><b>Food & Drink</b> &nbsp;·&nbsp; <code>121 to 128</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -888,7 +888,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Kitchen</b> &nbsp;·&nbsp; <code>129 – 135</code></summary>
+<summary><b>Kitchen</b> &nbsp;·&nbsp; <code>129 to 135</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -901,7 +901,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Tools & Weapons</b> &nbsp;·&nbsp; <code>136 – 152</code></summary>
+<summary><b>Tools & Weapons</b> &nbsp;·&nbsp; <code>136 to 152</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -919,7 +919,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Buildings</b> &nbsp;·&nbsp; <code>153 – 164</code></summary>
+<summary><b>Buildings</b> &nbsp;·&nbsp; <code>153 to 164</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -934,7 +934,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Transport</b> &nbsp;·&nbsp; <code>165 – 176</code></summary>
+<summary><b>Transport</b> &nbsp;·&nbsp; <code>165 to 176</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -949,7 +949,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Music & Arts</b> &nbsp;·&nbsp; <code>177 – 188</code></summary>
+<summary><b>Music & Arts</b> &nbsp;·&nbsp; <code>177 to 188</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -964,7 +964,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Clothing</b> &nbsp;·&nbsp; <code>189 – 195</code></summary>
+<summary><b>Clothing</b> &nbsp;·&nbsp; <code>189 to 195</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -977,7 +977,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Symbols</b> &nbsp;·&nbsp; <code>196 – 207</code></summary>
+<summary><b>Symbols</b> &nbsp;·&nbsp; <code>196 to 207</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -992,7 +992,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Science & Tech</b> &nbsp;·&nbsp; <code>208 – 223</code></summary>
+<summary><b>Science & Tech</b> &nbsp;·&nbsp; <code>208 to 223</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -1009,7 +1009,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Home</b> &nbsp;·&nbsp; <code>224 – 235</code></summary>
+<summary><b>Home</b> &nbsp;·&nbsp; <code>224 to 235</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -1024,7 +1024,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Everyday Items</b> &nbsp;·&nbsp; <code>236 – 245</code></summary>
+<summary><b>Everyday Items</b> &nbsp;·&nbsp; <code>236 to 245</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -1038,7 +1038,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Sports & Games</b> &nbsp;·&nbsp; <code>246 – 249</code></summary>
+<summary><b>Sports & Games</b> &nbsp;·&nbsp; <code>246 to 249</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -1049,7 +1049,7 @@ All icons are available as **PNG** (256×256, transparent background) in `visual
 </details>
 
 <details>
-<summary><b>Fantasy</b> &nbsp;·&nbsp; <code>250 – 254</code></summary>
+<summary><b>Fantasy</b> &nbsp;·&nbsp; <code>250 to 254</code></summary>
 <br>
 
 | Index | Icon | Word | | Index | Icon | Word |
@@ -1092,7 +1092,7 @@ All 42 language word lists plus emoji characters are compiled into a single Pyth
 
 ### Diacritic-Insensitive Matching
 
-Smart per-script handling — marks are only stripped where it's safe:
+Smart per-script handling. Marks are only stripped where it's safe:
 
 | Script | Behavior | Example |
 |---|---|---|
@@ -1101,7 +1101,7 @@ Smart per-script handling — marks are only stripped where it's safe:
 | **Arabic** | Tashkeel removed | Vowel marks (harakat) are optional |
 | **Hebrew** | Niqqud removed | Vowel points are optional |
 | **Cyrillic** | ё → е | Common Russian substitution |
-| **Thai, Devanagari, Bengali, Tamil, Telugu, Gurmukhi** | **Preserved** | Marks change meaning — never stripped |
+| **Thai, Devanagari, Bengali, Tamil, Telugu, Gurmukhi** | **Preserved** | Marks change meaning, never stripped |
 
 <br>
 
@@ -1143,7 +1143,7 @@ Position 3:  🔑  key
          ...
 ```
 
-They write their backup on paper — in any language, using any accepted word, or even a personal synonym that reminds them of the visual:
+They write their backup on paper, in any language, using any accepted word, or even a personal synonym that reminds them of the visual:
 
 | Approach | Backup | Why it works |
 |:---|:---|:---|
@@ -1151,9 +1151,9 @@ They write their backup on paper — in any language, using any accepted word, o
 | :es: Spanish | `perro  sol  llave  ...` | Native language |
 | :jp: Japanese | `犬  太陽  鍵  ...` | Any supported script |
 | Mixed | `dog  soleil  key  ...` | Languages can be combined freely |
-| Personal hints | `puppy  bright  lock  ...` | Any accepted synonym — write what makes sense to you |
+| Personal hints | `puppy  bright  lock  ...` | Any accepted synonym: write what makes sense to you |
 
-To recover, they type what they wrote — in any language — and the system maps each word back to its visual position. Alternatively, they can select the **36 icons directly**, bypassing language entirely.
+To recover, they type what they wrote, in any language, and the system maps each word back to its visual position. Alternatively, they can select the **36 icons directly**, bypassing language entirely.
 
 <br>
 
@@ -1163,7 +1163,7 @@ A test app is included for trying out seed generation and recovery.
 
 ```bash
 pip install PySide6
-pip install argon2-cffi   # optional — faster key derivation
+pip install argon2-cffi   # optional, faster key derivation
 python examples/universal.py
 ```
 
@@ -1171,7 +1171,7 @@ python examples/universal.py
 
 ## Contributing
 
-Contributions are welcome — especially for improving word coverage across languages. Adding more synonyms, shorter alternatives, regional variants, and colloquial terms for each visual position would be very appreciated.
+Contributions are welcome, especially for improving word coverage across languages. Adding more synonyms, shorter alternatives, regional variants, and colloquial terms for each visual position would be very appreciated.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute, the file format, and guidelines for adding words.
 

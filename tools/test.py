@@ -2757,7 +2757,7 @@ if __name__ == "__main__":
     import crypto.ml_kem as _kem
     import crypto.argon2 as _argon2
     print("=" * 68)
-    print("Universal Quantum Seed — Comprehensive Crypto Test Suite")
+    print("Universal Quantum Seed: Comprehensive Crypto Test Suite")
     print("=" * 68)
     import crypto.ml_dsa as _dsa
     print(f"  pynacl (libsodium):  {'available' if _ed._HAS_NACL else 'NOT installed (pure Python only)'}")

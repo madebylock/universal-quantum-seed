@@ -1,4 +1,4 @@
-# Universal Quantum Seed — Specification v1
+# Universal Quantum Seed Specification v1
 
 **Status:** Active
 **Version:** 1.0
@@ -22,7 +22,7 @@ X25519+ML-KEM-768).
 | Property | Value |
 |:---|:---|
 | Word counts | 24 (classical) or 36 (quantum-safe) |
-| Entropy bytes | 22 (24 words) or 34 (36 words) — see §3.1 |
+| Entropy bytes | 22 (24 words) or 34 (36 words), see §3.1 |
 | Checksum bits | 14 (24 words) or 12 (36 words), packed into the icon encoding (no checksum words) |
 | Phrase structure | N **distinct** icon indexes; a repeated icon is structurally invalid |
 | Entropy | 24 words = 176-bit (classical), 36 words = 272-bit (quantum-safe) |
@@ -96,7 +96,7 @@ Base word list (index 0-255):
 
 ## 3. Encoding
 
-A v1 seed phrase is an ordered sequence of N **distinct** icon indexes (0–255), N = 24 or 36.
+A v1 seed phrase is an ordered sequence of N **distinct** icon indexes (0 to 255), N = 24 or 36.
 There are no separate "data words" and "checksum words": the random entropy and the checksum
 are packed into one integer V, and V is **unranked** into a permutation-without-replacement
 of the 256-icon table (a falling-factorial mixed-radix number). Position i draws from the
@@ -120,8 +120,8 @@ produced by encoding and MUST be rejected by decoding (§3.4).
 V = (int_be(entropy) << C) | checksum
 ```
 
-- `int_be(entropy)` — the E entropy bytes read as one big-endian unsigned integer
-- `checksum` — the C-bit integer of §4; it occupies the C least-significant bits of V
+- `int_be(entropy)`: the E entropy bytes read as one big-endian unsigned integer
+- `checksum`: the C-bit integer of §4; it occupies the C least-significant bits of V
 - 0 ≤ V < 2^(8E+C)
 
 ### 3.3 Encode (unrank)
@@ -180,8 +180,8 @@ Decoding MUST reject, in this order:
 
 1. a length other than 24 or 36;
 2. any element that is not an integer in 0..255 (booleans are not integers here);
-3. a repeated icon — a structural check, evaluated before the checksum;
-4. a packed value whose entropy part is ≥ 2^(8E) — the unrank headroom that encoding
+3. a repeated icon (a structural check, evaluated before the checksum);
+4. a packed value whose entropy part is ≥ 2^(8E), the unrank headroom that encoding
    never produces;
 5. a checksum mismatch.
 
@@ -213,8 +213,8 @@ headroom value, or a checksum mismatch, and there is deliberately no legacy deco
 The checksum is a deterministic function of the entropy, so the set of valid phrases is an
 injective image of the uniform entropy: the phrase **as a whole** carries exactly H = 8E
 bits. Per-**position** marginals, however, are not uniform. Positions 0..N−2 span their
-radices fully and are very close to uniform, but the last position's digit — the
-most-significant one — only ranges over 0..182 of radix 221 (36 words) and 0..177 of
+radices fully and are very close to uniform, but the last position's digit (the
+most-significant one) only ranges over 0..182 of radix 221 (36 words) and 0..177 of
 radix 233 (24 words), because 2^(8E+C) is below the full capacity of the mixed radix. The
 last icon is therefore strongly biased toward the lower-ranked unused icons and never
 lands on the top 38 (36 words) / 55 (24 words) of them. This is
@@ -249,7 +249,7 @@ def compute_checksum(entropy, N):
 | Placement | the C least-significant bits of the packed value V (§3.2); no separate checksum words |
 
 This checksum detects transcription mistakes; it is not an authenticity check. It remains
-16–64× stronger than BIP39's 8-bit checksum on a 24-word phrase, and the repeated-icon rule
+16 to 64× stronger than BIP39's 8-bit checksum on a 24-word phrase, and the repeated-icon rule
 of §3.4 catches a further class of errors at no bit cost.
 
 ### Verification
@@ -274,7 +274,7 @@ import unicodedata
 passphrase_bytes = unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 ```
 
-- **NFKC normalization** — prevents cross-platform fund loss from different Unicode
+- **NFKC normalization**: prevents cross-platform fund loss from different Unicode
   representations of the same visual characters (e.g. macOS NFD vs Windows NFC)
 - No whitespace trimming or case folding
 - Empty string `""` is equivalent to no passphrase
@@ -286,14 +286,14 @@ passphrase_bytes = unicodedata.normalize("NFKC", passphrase).encode("utf-8")
 ### 6.0 Phrase Decoding & Checksum Verification
 
 Before any KDF computation, decode the phrase exactly as in §3.4:
-1. Verify the phrase has exactly 24 or 36 elements, each an integer 0–255
+1. Verify the phrase has exactly 24 or 36 elements, each an integer 0 to 255
 2. Verify no icon repeats (structural check, evaluated before the checksum)
 3. Rank the phrase to the packed value V; reject if `(V >> C) >= 2^(8E)` (unrank headroom)
 4. Split V: `checksum = V & (2^C − 1)`, `entropy = (V >> C)` as E big-endian bytes
 5. Recompute `compute_checksum(entropy, N)` (§4) and reject on mismatch
 
 If any step fails, key derivation MUST be rejected with an error. On success the **E
-recovered entropy bytes** — never the icon indexes — are the sole seed input to §6.1.
+recovered entropy bytes**, never the icon indexes, are the sole seed input to §6.1.
 
 ### 6.1 Length-Prefixed Payload
 
@@ -323,8 +323,8 @@ payload += passphrase_bytes
 Each (pos, byte) pair binds an entropy byte to its slot (preventing reordering).
 The domain prefix, entropy-length prefix, field tag, and passphrase length prefix
 together ensure that no two distinct (entropy, passphrase) inputs share a
-payload — including across the 24-word and 36-word formats. The uint16 field
-carries E (22 or 34) — the historical "data word count" — so payloads are
+payload, including across the 24-word and 36-word formats. The uint16 field
+carries E (22 or 34), the historical "data word count", so payloads are
 byte-for-byte identical to the pre-release layout for the same entropy.
 
 NFKC normalization of the passphrase prevents cross-platform fund loss from
@@ -422,11 +422,11 @@ def get_profile(master_key, profile_password):
 
 ### Properties
 
-- **Deterministic** — same master seed + same password always produces the same profile key
-- **Independent** — profiles cannot be derived from each other
-- **Hidden** — no way to enumerate how many profiles exist
-- **Plausible deniability** — under duress, reveal only the default profile
-- **No limit** — unlimited profiles from a single master seed
+- **Deterministic**: same master seed + same password always produces the same profile key
+- **Independent**: profiles cannot be derived from each other
+- **Hidden**: no way to enumerate how many profiles exist
+- **Plausible deniability**: under duress, reveal only the default profile
+- **No limit**: unlimited profiles from a single master seed
 
 ---
 
@@ -497,7 +497,7 @@ def get_quantum_seed(master_key, algorithm, key_index=0):
 
 #### 9.2.1 ML-DSA-65 (FIPS 204)
 
-Lattice-based digital signature — NIST Security Level 3 (192-bit post-quantum).
+Lattice-based digital signature, NIST Security Level 3 (192-bit post-quantum).
 
 | Property | Value |
 |:---|:---|
@@ -510,7 +510,7 @@ Lattice-based digital signature — NIST Security Level 3 (192-bit post-quantum)
 
 #### 9.2.2 SLH-DSA-SHAKE-128s (FIPS 205)
 
-Hash-based digital signature — NIST Security Level 1 (128-bit post-quantum).
+Hash-based digital signature, NIST Security Level 1 (128-bit post-quantum).
 
 | Property | Value |
 |:---|:---|
@@ -525,7 +525,7 @@ Hash-based digital signature — NIST Security Level 1 (128-bit post-quantum).
 
 #### 9.3.1 ML-KEM-768 (FIPS 203)
 
-Lattice-based key encapsulation mechanism — NIST Security Level 3 (192-bit post-quantum).
+Lattice-based key encapsulation mechanism, NIST Security Level 3 (192-bit post-quantum).
 
 | Property | Value |
 |:---|:---|
@@ -540,13 +540,13 @@ Lattice-based key encapsulation mechanism — NIST Security Level 3 (192-bit pos
 
 ### 9.4 Classical Primitives
 
-Classical algorithms are used as components of the hybrid schemes (Sections 9.5–9.6).
+Classical algorithms are used as components of the hybrid schemes (Sections 9.5 and 9.6).
 They are not derived standalone from the master seed; they are embedded within
 their respective hybrid keypairs.
 
 #### 9.4.1 Ed25519 (RFC 8032)
 
-Edwards-curve digital signature — ~128-bit classical security.
+Edwards-curve digital signature, ~128-bit classical security.
 
 | Property | Value |
 |:---|:---|
@@ -558,7 +558,7 @@ Edwards-curve digital signature — ~128-bit classical security.
 
 #### 9.4.2 X25519 (RFC 7748)
 
-Montgomery-curve Diffie-Hellman key exchange — ~128-bit classical security.
+Montgomery-curve Diffie-Hellman key exchange, ~128-bit classical security.
 
 | Property | Value |
 |:---|:---|
@@ -568,7 +568,7 @@ Montgomery-curve Diffie-Hellman key exchange — ~128-bit classical security.
 | Shared secret | 32 bytes |
 | Curve | Curve25519 (y^2 = x^3 + 486662x^2 + x mod p) |
 
-### 9.5 Hybrid Signatures — Ed25519 + ML-DSA-65
+### 9.5 Hybrid Signatures: Ed25519 + ML-DSA-65
 
 AND-composition: both Ed25519 and ML-DSA-65 must independently verify for the hybrid
 signature to be valid. Security holds as long as *either* algorithm remains unbroken.
@@ -579,7 +579,7 @@ signature to be valid. Security holds as long as *either* algorithm remains unbr
 | Public key | 1,984 bytes (Ed25519 pk 32B + ML-DSA-65 pk 1,952B) |
 | Signature | 3,373 bytes (Ed25519 sig 64B + ML-DSA-65 sig 3,309B) |
 | Keygen seed | 64 bytes (first 32B → Ed25519, last 32B → ML-DSA-65) |
-| Context limit | 0–255 bytes |
+| Context limit | 0 to 255 bytes |
 | Domain | `b"hybrid-dsa-v1"` |
 
 #### 9.5.1 Stripping Resistance
@@ -615,7 +615,7 @@ The sign function performs a composite verify-after-sign check before returning.
 verification fails, signing raises an error rather than returning a potentially faulty
 signature.
 
-### 9.6 Hybrid Key Encapsulation — X25519 + ML-KEM-768
+### 9.6 Hybrid Key Encapsulation: X25519 + ML-KEM-768
 
 Both shared secrets are combined via HKDF with ciphertext and public key binding.
 Security holds as long as *either* X25519 or ML-KEM-768 remains unbroken.
@@ -665,11 +665,11 @@ perform dead-store elimination).
 
 ### 9.8 Properties
 
-- **Deterministic** — same master seed + algorithm + key_index always produces the same keypair
-- **Independent** — all five algorithms produce completely independent keys from each other
-- **Domain separated** — distinct HKDF info strings prevent cross-algorithm key reuse
-- **Expandable** — key_index allows unlimited keypairs per algorithm
-- **Constant-time** — best-effort algorithmic constant-time (branchless conditional swaps, no data-dependent branches on secret values)
+- **Deterministic**: same master seed + algorithm + key_index always produces the same keypair
+- **Independent**: all five algorithms produce completely independent keys from each other
+- **Domain separated**: distinct HKDF info strings prevent cross-algorithm key reuse
+- **Expandable**: key_index allows unlimited keypairs per algorithm
+- **Constant-time**: best-effort algorithmic constant-time (branchless conditional swaps, no data-dependent branches on secret values)
 
 ---
 
@@ -718,7 +718,7 @@ key derivation.
 | Tier | Algorithms | Threat Model |
 |:---|:---|:---|
 | Classical | Ed25519, X25519 | Pre-quantum (~128-bit), broken by Shor's algorithm |
-| Post-quantum | ML-DSA-65, SLH-DSA-SHAKE-128s, ML-KEM-768 | NIST Level 1–3, safe against known quantum attacks |
+| Post-quantum | ML-DSA-65, SLH-DSA-SHAKE-128s, ML-KEM-768 | NIST Level 1 to 3, safe against known quantum attacks |
 | Hybrid | Ed25519+ML-DSA-65, X25519+ML-KEM-768 | AND-composition: secure as long as *either* component holds |
 
 The hybrid tier provides defense-in-depth: if a flaw is discovered in ML-DSA or ML-KEM,

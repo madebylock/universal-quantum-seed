@@ -163,7 +163,7 @@ class SuggestionPopup(QListWidget):
         t1 = time.perf_counter()
         for word, idx in suggestions:
             _, base = BASE_LOOKUP.get(idx, ("?", "?"))
-            label = f"[{idx}]  {word}    —  {base}" if word != base else f"[{idx}]  {word}"
+            label = f"[{idx}]  {word}    ({base})" if word != base else f"[{idx}]  {word}"
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, word)
             pm = load_icon(idx, 24)
@@ -941,7 +941,7 @@ class SeedTestWindow(QMainWindow):
         main_layout.addSpacing(8)
         main_layout.addWidget(pp_frame)
 
-        pp_warn = QLabel("If you set a passphrase, you must remember it — losing it means losing access to your seed.")
+        pp_warn = QLabel("If you set a passphrase, you must remember it. Losing it means losing access to your seed.")
         pp_warn.setWordWrap(True)
         pp_warn.setStyleSheet(
             "color: #b08030; font-size: 10px; font-style: italic;"
@@ -1267,7 +1267,7 @@ class SeedTestWindow(QMainWindow):
             "QPushButton:hover { background: #d4443c; }"
         )
         if count > 0:
-            self.mouse_label.setText(f"{count} movements — move your mouse around")
+            self.mouse_label.setText(f"{count} movements: move your mouse around")
         else:
             self.mouse_label.setText("Move your mouse around")
         _, text_color, _, _ = self._mouse_style_for_count(count)

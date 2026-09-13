@@ -1,6 +1,6 @@
 # Contributing to the Universal Quantum Seed
 
-Thank you for your interest in contributing! The most valuable contributions are improving word coverage across languages — adding more synonyms, shorter alternatives, regional variants, and colloquial terms so that seed recovery is as intuitive as possible for users worldwide.
+Thank you for your interest in contributing! The most valuable contributions are improving word coverage across languages: adding more synonyms, shorter alternatives, regional variants, and colloquial terms so that seed recovery is as intuitive as possible for users worldwide.
 
 ## How You Can Help
 
@@ -10,7 +10,7 @@ Check that the words in your language file are correct, commonly understood, and
 
 ### 2. Add More Synonyms and Abbreviations
 
-Each visual position should have multiple accepted words — the more, the better. Good additions include:
+Each visual position should have multiple accepted words. The more, the better. Good additions include:
 
 - **Synonyms**: different words for the same concept (e.g., "dog", "puppy", "hound")
 - **Short forms**: abbreviations or informal terms people actually use in daily speech
@@ -45,7 +45,7 @@ SEED_WORDS = {
 - **First word** in each list is the primary/display word for that language
 - **No duplicates** within a single index
 - Words must be **real words** that a native speaker would recognize
-- Keep words **as short as possible** — aim for the shortest natural word first
+- Keep words **as short as possible**: aim for the shortest natural word first
 
 ## How to Submit Changes
 
@@ -74,7 +74,7 @@ SEED_WORDS = {
 
 The compiler detects when the same word maps to different visual indexes across languages. For example, if "ring" maps to both "circle" (198) and "ring" (241), that's a collision. The word must be removed from one index to keep lookups unambiguous.
 
-Run `python tools/compile.py` before submitting — it must report `Collisions: NONE (clean!)`.
+Run `python tools/compile.py` before submitting. It must report `Collisions: NONE (clean!)`.
 
 ## Guidelines for Adding Words
 
@@ -94,7 +94,7 @@ Run `python tools/compile.py` before submitting — it must report `Collisions: 
 
 ## Reporting Bugs
 
-If you find an issue — a wrong translation, a word that maps to the wrong visual, or a technical problem — please [open an issue](../../issues) with:
+If you find an issue (a wrong translation, a word that maps to the wrong visual, or a technical problem), please [open an issue](../../issues) with:
 
 1. **Language** affected
 2. **Index** number (0-255) and the visual it represents
