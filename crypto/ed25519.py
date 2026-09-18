@@ -14,20 +14,17 @@ Sizes:
     Public key:  32 bytes (compressed Edwards point)
     Signature:   64 bytes (R || S)
 
-Best-effort constant-time: all scalar multiplications use branchless
-conditional swaps/moves (Montgomery ladder with cswap for arbitrary-point
-scalar multiplication, precomputed table with branchless cmov for base-point
-multiplication). Point addition and doubling use complete formulas with no
-identity-point shortcuts. Encoding uses branchless sign-bit injection.
+Secret operations (keygen, public-key derivation from a seed, signing)
+require PyNaCl (libsodium) and raise RuntimeError without it. Verification
+handles public data only and may run in pure Python.
 
-While the CPython interpreter cannot provide hardware-level constant-time
-guarantees (GC pauses, object allocation, dynamic dispatch), this
-implementation eliminates all *algorithmic* timing channels:
-  - No data-dependent branches on secret values.
-  - No early returns conditioned on secret comparisons.
-
-When pynacl (libsodium) is available, keygen/sign/verify delegate to
-C for additional side-channel resistance.
+The pure-Python scalar code below is branch-free at the Python level
+(Montgomery ladder with cswap, precomputed base-point table with cmov,
+complete addition formulas, branchless sign-bit injection), but CPython big
+integers still leak secret-dependent timing and allocation patterns (limb
+counts, small-int caching, mask-dependent result sizes), so it is reference
+code for RFC 8032 test vectors only. Set UQS_ALLOW_PURE_PYTHON_SECRETS=1 to
+run it deliberately (see crypto/native_backend.py).
 """
 
 import hashlib
@@ -37,13 +34,19 @@ from typing import Optional
 # ── Constant-time backend ──────────────────────────────────────
 # pynacl (libsodium) provides constant-time Ed25519 operations.
 # When available, keygen/sign/verify delegate to C for side-channel
-# resistance. Pure Python internals are retained as fallback.
+# resistance. Pure Python internals are retained for verification and
+# test vectors only.
 _HAS_NACL = False
 try:
     import nacl.bindings
     _HAS_NACL = True
 except ImportError:
     pass
+
+try:
+    from .native_backend import require_native_backend
+except ImportError:
+    from crypto.native_backend import require_native_backend
 
 # ── Secure memory utilities (libsodium-backed) ────────────────
 # sodium_memzero:  Compiler-resistant secure zeroing.
@@ -95,6 +98,13 @@ def _munlock(buf):
     """Unlock memory pages (also zeros the region)."""
     if _HAS_SODIUM and isinstance(buf, (bytearray, memoryview)) and len(buf):
         _lib.sodium_munlock(_ffi.from_buffer(buf), len(buf))
+
+
+def _require_native_secret_backend():
+    """Fail closed before using Python scalar code with Ed25519 secrets."""
+    require_native_backend(
+        _HAS_NACL, "Ed25519 secret operations", "PyNaCl (libsodium)")
+
 
 # ── Exported Size Constants ────────────────────────────────────────
 ED25519_SEED_SIZE = 32
@@ -389,6 +399,7 @@ def ed25519_keygen(seed):
     """
     if len(seed) != 32:
         raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
+    _require_native_secret_backend()
 
     if _HAS_NACL:
         if _HAS_SODIUM and isinstance(seed, (bytearray, memoryview)):
@@ -409,6 +420,7 @@ def _public_key_from_seed(seed):
     """Derive the RFC 8032 public key for a 32-byte Ed25519 seed."""
     if len(seed) != 32:
         raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed)}")
+    _require_native_secret_backend()
 
     if _HAS_NACL:
         pk, _sk = nacl.bindings.crypto_sign_seed_keypair(bytes(seed))
@@ -449,6 +461,7 @@ def ed25519_sign(message, sk_bytes):
     """
     if len(sk_bytes) != 64:
         raise ValueError(f"Ed25519 sk must be 64 bytes, got {len(sk_bytes)}")
+    _require_native_secret_backend()
 
     seed = sk_bytes[:32]
     pk_bytes = sk_bytes[32:]

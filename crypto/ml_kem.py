@@ -19,6 +19,14 @@ Assumption: Module Learning With Errors (MLWE) hardness.
 
 Reference: NIST FIPS 203 (August 2024).
 
+Native backend:
+    Decapsulation, encapsulation with fresh randomness and random key
+    generation run in PQClean through the ``pqcrypto`` package and raise
+    RuntimeError without it. Seeded key generation and encapsulation with
+    caller-supplied randomness stay in Python for deterministic test
+    vectors; UQS_ALLOW_PURE_PYTHON_SECRETS=1 unlocks the gated operations
+    for test vectors and development only (see crypto/native_backend.py).
+
 Public API:
     ml_kem_keygen(seed)                 -> (ek_bytes, dk_bytes)
     ml_kem_encaps(ek, randomness=None)  -> (ct_bytes, shared_secret)
@@ -57,7 +65,9 @@ import os
 
 # ── C-accelerated backend (pqcrypto / PQClean) ──────────────────
 # When available, encaps/decaps delegate to C for ~100x speedup.
-# Keygen still uses pure Python (deterministic seed support).
+# Seeded keygen stays in Python (pqcrypto has no seeded keygen); random
+# keygen, encapsulation without caller randomness and decapsulation refuse
+# to run without pqcrypto (see native_backend).
 _HAS_PQCRYPTO = False
 try:
     from pqcrypto.kem.ml_kem_768 import (
@@ -68,6 +78,17 @@ try:
     _HAS_PQCRYPTO = True
 except ImportError:
     pass
+
+try:
+    from .native_backend import require_native_backend
+except ImportError:
+    from crypto.native_backend import require_native_backend
+
+
+def _require_pqcrypto(operation):
+    """Fail closed before a decapsulation key or fresh randomness reaches Python."""
+    require_native_backend(
+        _HAS_PQCRYPTO, operation, "the pqcrypto package (PQClean ML-KEM-768)")
 
 # libsodium (via PyNaCl) for secure memory operations.
 # Optional: gracefully degrades when PyNaCl is not installed.
@@ -705,6 +726,7 @@ def ml_kem_keygen(seed=None):
     if seed is None:
         if _HAS_PQCRYPTO:
             return _c_kem_keygen()
+        _require_pqcrypto("ML-KEM random key generation")
         seed = os.urandom(64)
     if len(seed) != 64:
         raise ValueError(f"ML-KEM-768 keygen requires 64-byte seed, got {len(seed)}")
@@ -756,6 +778,7 @@ def ml_kem_encaps(ek, randomness=None):
         return ct, ss
 
     if randomness is None:
+        _require_pqcrypto("ML-KEM encapsulation")
         randomness = os.urandom(32)
     if len(randomness) != 32:
         raise ValueError(f"ML-KEM-768 encaps randomness must be 32 bytes, got {len(randomness)}")
@@ -809,6 +832,7 @@ def ml_kem_decaps(dk, ct):
     # C-accelerated path: ~100x faster than pure Python NTT.
     if _HAS_PQCRYPTO:
         return _c_kem_decaps(bytes(dk), bytes(ct))
+    _require_pqcrypto("ML-KEM decapsulation")
 
     # Parse DK = dk_pke || ek_pke || h || z
     # Secret components use bytearray so they can be securely wiped.

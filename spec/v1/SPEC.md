@@ -669,7 +669,7 @@ perform dead-store elimination).
 - **Independent**: all five algorithms produce completely independent keys from each other
 - **Domain separated**: distinct HKDF info strings prevent cross-algorithm key reuse
 - **Expandable**: key_index allows unlimited keypairs per algorithm
-- **Constant-time**: best-effort algorithmic constant-time (branchless conditional swaps, no data-dependent branches on secret values)
+- **Constant-time**: every secret operation (key derivation, keygen, signing, Diffie-Hellman, decapsulation, AES-GCM) runs in a native constant-time library (libsodium, OpenSSL, argon2, PQClean) and raises instead of running without it; the pure-Python reference code is algorithmically branch-free but CPython big-integer and table arithmetic is not constant time, so it serves verification and test vectors only (`UQS_ALLOW_PURE_PYTHON_SECRETS=1`)
 
 ---
 

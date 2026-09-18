@@ -48,7 +48,7 @@ result differs, so source and generated data remain reviewable together.
 
 The **36-word seed is quantum-safe by design**. Its 272-bit entropy survives Grover's algorithm with 136-bit post-quantum security, well above the 128-bit floor. The 24-word compact format (176-bit) is designed for classical use; for quantum-safe key derivation, **use 36 words**.
 
-Beyond the quantum-resistant seed, this system includes a **complete three-tier cryptography stack** (classical, post-quantum, and hybrid), all pure Python with zero external crypto dependencies. Every algorithm is derived deterministically from the same master seed using HKDF domain separation.
+Beyond the quantum-resistant seed, this system includes a **complete three-tier cryptography stack** (classical, post-quantum, and hybrid), written in readable Python with every secret operation delegated to a native constant-time library (see [Installation](#installation)). Every algorithm is derived deterministically from the same master seed using HKDF domain separation.
 
 ### Tier 1: Classical
 
@@ -359,7 +359,7 @@ stretched = Argon2id(secret=stage1, salt="universal-seed-v1-stretch-argon2id")
 Argon2id is the **winner of the Password Hashing Competition** (2015) and the current OWASP recommendation for high-value targets.
 
 ```bash
-pip install argon2-cffi   # optional: ~100x faster, pure Python fallback included
+pip install argon2-cffi   # required: key derivation runs in the C library
 ```
 
 ### Layer 4: HKDF-Expand (RFC 5869)
@@ -462,10 +462,24 @@ Everything lives in a single file, `seed.py`. Import it and you get seed generat
 ### Installation
 
 ```bash
-pip install argon2-cffi   # optional: ~100x faster, pure Python fallback included
+pip install PyNaCl cryptography argon2-cffi   # required for every secret operation
+pip install pqcrypto                          # ML-KEM-768 and ML-DSA-65 secret operations
 ```
 
-No external dependencies required. `seed.py` uses only the Python standard library and the bundled `crypto/argon2.py` module. Installing `argon2-cffi` is optional but recommended for performance (~100x faster Argon2id).
+Seed generation, word lookup, checksum verification and signature verification run on the Python standard library alone. Every operation that touches a secret (key derivation, key generation, signing, Diffie-Hellman, decapsulation, AES-GCM encryption and decryption) runs in a native constant-time library and raises `RuntimeError` when that library is missing:
+
+| Operation | Native backend |
+|:---|:---|
+| Argon2id key derivation (`get_seed`, `get_profile`) | `argon2-cffi` |
+| Ed25519 key generation and signing | `PyNaCl` (libsodium) |
+| X25519 key generation and Diffie-Hellman | `PyNaCl`, or `cryptography` (OpenSSL) |
+| AES-256-GCM encryption and decryption | `cryptography` (OpenSSL) |
+| ML-KEM-768 decapsulation, encapsulation, random key generation | `pqcrypto` (PQClean) |
+| ML-DSA-65 signing | `pqcrypto` (PQClean) |
+
+The pure-Python implementations stay in the repository as readable reference code, used for verification of public data and for the known-answer tests. CPython big integers, byte-table lookups and small-integer caching leak secret-dependent timing and memory-access patterns to other processes on the same machine, so the package refuses to route a secret through them. Seeded ML-KEM and ML-DSA key generation (the step that turns a quantum seed into a keypair) has no native equivalent and stays in Python; it runs once per derivation with no attacker-chosen input.
+
+To run the reference code deliberately, for example to reproduce test vectors on a machine that holds no real secrets, set `UQS_ALLOW_PURE_PYTHON_SECRETS=1`. Never set it in a wallet, a server or any process that handles user keys.
 
 ### Quick Start
 
@@ -1163,7 +1177,7 @@ A test app is included for trying out seed generation and recovery.
 
 ```bash
 pip install PySide6
-pip install argon2-cffi   # optional, faster key derivation
+pip install PyNaCl cryptography argon2-cffi   # required for key derivation and signing
 python examples/universal.py
 ```
 

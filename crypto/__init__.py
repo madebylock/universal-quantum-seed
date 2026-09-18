@@ -16,8 +16,15 @@ Hybrid (classical + post-quantum):
     Hybrid-KEM-768 — X25519  + ML-KEM-768 (shared secrets combined via HKDF).
 
 KDF:
-    Argon2id (RFC 9106) — memory-hard KDF. Uses argon2-cffi when available,
-    falls back to pure Python implementation.
+    Argon2id (RFC 9106) — memory-hard KDF, runs in argon2-cffi.
+
+Native backends:
+    Every secret operation requires its native constant-time library:
+    PyNaCl (Ed25519, X25519), cryptography (AES-GCM, X25519 fallback),
+    argon2-cffi (Argon2id) and pqcrypto (ML-KEM, ML-DSA). Without it the
+    operation raises RuntimeError; the pure-Python reference code runs only
+    with UQS_ALLOW_PURE_PYTHON_SECRETS=1 (test vectors and development).
+    See native_backend.py.
 """
 
 # Classical primitives

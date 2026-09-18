@@ -12,13 +12,13 @@ Sizes:
     Nonce: 12 bytes (recommended per NIST SP 800-38D)
     Tag:   16 bytes (appended to ciphertext)
 
-This module provides a pure-Python implementation with no external
-dependencies.  All operations use table lookups and branchless logic
-where possible, but CPython cannot guarantee hardware-level constant-time
-behavior.
-
-When the ``cryptography`` package is available, encrypt/decrypt delegate
-to OpenSSL's AES-GCM for constant-time performance.
+Encryption and decryption run in OpenSSL through the ``cryptography``
+package and raise RuntimeError without it. The pure-Python AES and GHASH
+below index the S-box with key-derived bytes and branch on bits of the
+hash subkey, which leaks through cache and timing side channels, so they
+are reference code for NIST test vectors only. Set
+UQS_ALLOW_PURE_PYTHON_SECRETS=1 to run them deliberately (see
+crypto/native_backend.py).
 
 References:
     - NIST SP 800-38D: Galois/Counter Mode of Operation (GCM)
@@ -48,6 +48,17 @@ try:
     _HAS_CRYPTO = True
 except ImportError:
     pass
+
+try:
+    from .native_backend import require_native_backend
+except ImportError:
+    from crypto.native_backend import require_native_backend
+
+
+def _require_native_backend():
+    """Fail closed before a key reaches the pure-Python cipher."""
+    require_native_backend(
+        _HAS_CRYPTO, "AES-GCM", "the cryptography package (OpenSSL)")
 
 # ── Size constants ────────────────────────────────────────────
 
@@ -253,11 +264,12 @@ def aes_gcm_encrypt(
             f"AAD ({len(aad)} bytes) exceeds NIST SP 800-38D "
             f"maximum ({_MAX_AAD_BYTES} bytes)")
 
+    _require_native_backend()
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
         return cipher.encrypt(nonce, plaintext, aad or None)
 
-    # Pure-Python fallback
+    # Reference implementation: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     rk = _key_expansion(key)
     H = bytearray(16)
     _aes_block(H, rk)
@@ -339,11 +351,12 @@ def aes_gcm_decrypt(
             f"AAD ({len(aad)} bytes) exceeds NIST SP 800-38D "
             f"maximum ({_MAX_AAD_BYTES} bytes)")
 
+    _require_native_backend()
     if _HAS_CRYPTO:
         cipher = _AESGCM(key)
         return cipher.decrypt(nonce, ciphertext, aad or None)
 
-    # Pure-Python fallback
+    # Reference implementation: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     ct = ciphertext[:-16]
     received_tag = ciphertext[-16:]
 
