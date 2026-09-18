@@ -22,10 +22,12 @@ Reference: NIST FIPS 203 (August 2024).
 Native backend:
     Decapsulation, encapsulation with fresh randomness and random key
     generation run in PQClean through the ``pqcrypto`` package and raise
-    RuntimeError without it. Seeded key generation and encapsulation with
-    caller-supplied randomness stay in Python for deterministic test
-    vectors; UQS_ALLOW_PURE_PYTHON_SECRETS=1 unlocks the gated operations
-    for test vectors and development only (see crypto/native_backend.py).
+    RuntimeError without it. Encapsulation with caller-supplied randomness
+    has no native equivalent (pqcrypto draws its own) and is refused as
+    well, since the randomness is the shared secret's preimage. Seeded key
+    generation stays in Python for deterministic derivation;
+    UQS_ALLOW_PURE_PYTHON_SECRETS=1 unlocks the gated operations for test
+    vectors and development only (see crypto/native_backend.py).
 
 Public API:
     ml_kem_keygen(seed)                 -> (ek_bytes, dk_bytes)
@@ -66,8 +68,10 @@ import os
 # ── C-accelerated backend (pqcrypto / PQClean) ──────────────────
 # When available, encaps/decaps delegate to C for ~100x speedup.
 # Seeded keygen stays in Python (pqcrypto has no seeded keygen); random
-# keygen, encapsulation without caller randomness and decapsulation refuse
-# to run without pqcrypto (see native_backend).
+# keygen, encapsulation and decapsulation refuse to run without pqcrypto,
+# and encapsulation with caller-supplied randomness, which pqcrypto cannot
+# serve, is refused unless the test-only override is set (see
+# native_backend).
 _HAS_PQCRYPTO = False
 try:
     from pqcrypto.kem.ml_kem_768 import (
@@ -80,15 +84,43 @@ except ImportError:
     pass
 
 try:
-    from .native_backend import require_native_backend
+    from .native_backend import (
+        PURE_PYTHON_SECRETS_ENV,
+        pure_python_secrets_allowed,
+        require_native_backend,
+    )
 except ImportError:
-    from crypto.native_backend import require_native_backend
+    from crypto.native_backend import (
+        PURE_PYTHON_SECRETS_ENV,
+        pure_python_secrets_allowed,
+        require_native_backend,
+    )
 
 
 def _require_pqcrypto(operation):
     """Fail closed before a decapsulation key or fresh randomness reaches Python."""
     require_native_backend(
         _HAS_PQCRYPTO, operation, "the pqcrypto package (PQClean ML-KEM-768)")
+
+
+def _require_pure_python_encaps_allowed():
+    """Refuse encapsulation with caller-supplied randomness.
+
+    pqcrypto draws its own randomness, so this mode exists only in the
+    pure-Python reference, where m and the derived (K, r) would pass through
+    variable-time arithmetic. It runs only with the test-only override.
+    """
+    if pure_python_secrets_allowed():
+        return
+    if _HAS_PQCRYPTO:
+        raise RuntimeError(
+            "ML-KEM encapsulation cannot use the pqcrypto backend with "
+            "caller-supplied randomness, and pure-Python ML-KEM encapsulation "
+            "is disabled because it is not constant time. Encapsulate without "
+            f"randomness, or set {PURE_PYTHON_SECRETS_ENV}=1 only for "
+            "deterministic test vectors and development."
+        )
+    _require_pqcrypto("ML-KEM encapsulation")
 
 # libsodium (via PyNaCl) for secure memory operations.
 # Optional: gracefully degrades when PyNaCl is not installed.
@@ -780,8 +812,12 @@ def ml_kem_encaps(ek, randomness=None):
     if randomness is None:
         _require_pqcrypto("ML-KEM encapsulation")
         randomness = os.urandom(32)
-    if len(randomness) != 32:
-        raise ValueError(f"ML-KEM-768 encaps randomness must be 32 bytes, got {len(randomness)}")
+    else:
+        if len(randomness) != 32:
+            raise ValueError(
+                f"ML-KEM-768 encaps randomness must be 32 bytes, got {len(randomness)}")
+        # Reference implementation: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
+        _require_pure_python_encaps_allowed()
 
     m = randomness
 

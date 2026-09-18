@@ -212,7 +212,9 @@ def hybrid_kem_encaps(ek, randomness=None, *, version=HYBRID_KEM_VERSION):
     Args:
         ek: 1,216-byte hybrid encapsulation key.
         randomness: 64 bytes (32B for X25519 ephemeral + 32B for ML-KEM).
-                    If None, generates securely.
+                    If None, generates securely. Caller-supplied randomness
+                    runs the pure-Python ML-KEM reference and is refused
+                    unless UQS_ALLOW_PURE_PYTHON_SECRETS=1 (test vectors).
         version: Hybrid-KEM wire-format version. Version 1 preserves the
                  original ``hybrid-kem-v1`` HKDF domain.
 

@@ -166,10 +166,17 @@ def test_x25519_openssl_backend_matches_libsodium(no_override, monkeypatch):
     assert x25519._x25519_raw_bytes_no_reject(sk_ssl, _BOB_PK) == _X25519_SHARED
 
 
-@pytest.mark.skipif(
-    not (x25519._HAS_NACL or x25519._HAS_CRYPTOGRAPHY_X25519),
-    reason="no native X25519 backend installed")
-def test_x25519_native_low_order_rejection_never_reaches_python(no_override, monkeypatch):
+@pytest.mark.parametrize("backend", ["libsodium", "openssl"])
+def test_x25519_native_low_order_rejection_never_reaches_python(
+        no_override, monkeypatch, backend):
+    if backend == "libsodium":
+        if not x25519._HAS_NACL:
+            pytest.skip("PyNaCl not installed")
+        monkeypatch.setattr(x25519, "_HAS_CRYPTOGRAPHY_X25519", False)
+    else:
+        if not x25519._HAS_CRYPTOGRAPHY_X25519:
+            pytest.skip("cryptography not installed")
+        monkeypatch.setattr(x25519, "_HAS_NACL", False)
     monkeypatch.setattr(x25519, "_x25519_raw", lambda *a: pytest.fail("ladder reached"))
     sk = x25519._clamp(_fixture("x25519 low order sk", 32))
     low_order_pk = bytes(32)
@@ -178,6 +185,43 @@ def test_x25519_native_low_order_rejection_never_reaches_python(no_override, mon
         x25519._x25519_raw_bytes(sk, low_order_pk)
     with pytest.raises(Exception):
         x25519.x25519(sk, low_order_pk)
+
+
+@pytest.mark.skipif(not x25519._HAS_NACL, reason="PyNaCl not installed")
+def test_x25519_no_reject_takes_buffer_public_keys_on_libsodium_alone(no_override, monkeypatch):
+    # libsodium's binding accepts bytes only. A bytearray or memoryview
+    # public key (a ciphertext slice) must still yield the real shared
+    # secret, never a silent all-zero result that hybrid decapsulation
+    # would turn into the implicit-rejection secret.
+    monkeypatch.setattr(x25519, "_HAS_CRYPTOGRAPHY_X25519", False)
+    monkeypatch.setattr(x25519, "_x25519_raw", lambda *a: pytest.fail("ladder reached"))
+    sk = x25519._clamp(_ALICE_SK)
+    assert x25519._x25519_raw_bytes_no_reject(sk, bytearray(_BOB_PK)) == _X25519_SHARED
+    assert x25519._x25519_raw_bytes_no_reject(sk, memoryview(_BOB_PK)) == _X25519_SHARED
+    if ml_kem._HAS_PQCRYPTO:
+        ek, dk = hybrid_kem.hybrid_kem_keygen(_fixture("hybrid kem buffer seed", 96))
+        ct, ss = hybrid_kem.hybrid_kem_encaps(ek)
+        assert hybrid_kem.hybrid_kem_decaps(dk, bytearray(ct)) == ss
+
+
+@pytest.mark.skipif(not x25519._HAS_NACL, reason="PyNaCl not installed")
+def test_x25519_no_reject_propagates_unexpected_backend_errors(no_override, monkeypatch):
+    import nacl.bindings
+
+    # Only the low-order refusal maps to zeros; any other backend failure
+    # must surface instead of becoming a silent wrong secret.
+    monkeypatch.setattr(x25519, "_HAS_CRYPTOGRAPHY_X25519", False)
+    monkeypatch.setattr(x25519, "_x25519_raw", lambda *a: pytest.fail("ladder reached"))
+    sk = x25519._clamp(_ALICE_SK)
+    with pytest.raises(TypeError):
+        x25519._x25519_raw_bytes_no_reject(bytearray(sk), _BOB_PK)
+
+    def _broken(*_args):
+        raise MemoryError("backend failure")
+
+    monkeypatch.setattr(nacl.bindings, "crypto_scalarmult", _broken)
+    with pytest.raises(MemoryError):
+        x25519._x25519_raw_bytes_no_reject(sk, _BOB_PK)
 
 
 # ── Ed25519 ────────────────────────────────────────────────────
@@ -255,13 +299,17 @@ def test_argon2_override_runs_reference_vector(override, monkeypatch):
 
 def test_ml_kem_gated_operations_fail_closed(no_override, no_pqcrypto, monkeypatch):
     ek, dk = ml_kem.ml_kem_keygen(_fixture("ml-kem seed", 64))  # seeded keygen stays available
-    ct, ss = ml_kem.ml_kem_encaps(ek, randomness=_fixture("ml-kem m", 32))
-    assert len(ct) == ml_kem.ML_KEM_CT_SIZE and len(ss) == 32
+    monkeypatch.setattr(ml_kem, "_k_pke_encrypt", lambda *a: pytest.fail("encrypt reached"))
     monkeypatch.setattr(ml_kem, "_k_pke_decrypt", lambda *a: pytest.fail("decrypt reached"))
     with pytest.raises(RuntimeError, match="ML-KEM decapsulation requires the pqcrypto package"):
-        ml_kem.ml_kem_decaps(dk, ct)
+        ml_kem.ml_kem_decaps(dk, bytes(ml_kem.ML_KEM_CT_SIZE))
     with pytest.raises(RuntimeError, match="ML-KEM encapsulation requires the pqcrypto package"):
         ml_kem.ml_kem_encaps(ek)
+    # Caller-supplied randomness is the shared secret's preimage: gated too.
+    with pytest.raises(RuntimeError, match="ML-KEM encapsulation requires the pqcrypto package"):
+        ml_kem.ml_kem_encaps(ek, randomness=_fixture("ml-kem m", 32))
+    with pytest.raises(ValueError, match="randomness must be 32 bytes"):
+        ml_kem.ml_kem_encaps(ek, randomness=b"short")
     with pytest.raises(RuntimeError, match="ML-KEM random key generation requires"):
         ml_kem.ml_kem_keygen()
     hybrid_ek, hybrid_dk = hybrid_kem.hybrid_kem_keygen(_fixture("hybrid kem seed 2", 96))
@@ -272,6 +320,21 @@ def test_ml_kem_gated_operations_fail_closed(no_override, no_pqcrypto, monkeypat
 def test_ml_kem_override_round_trips(override, no_pqcrypto):
     ek, dk = ml_kem.ml_kem_keygen(_fixture("ml-kem seed", 64))
     ct, ss = ml_kem.ml_kem_encaps(ek, randomness=_fixture("ml-kem m", 32))
+    assert ml_kem.ml_kem_decaps(dk, ct) == ss
+
+
+@pytest.mark.skipif(not ml_kem._HAS_PQCRYPTO, reason="pqcrypto not installed")
+def test_ml_kem_caller_randomness_refused_with_pqcrypto(no_override, monkeypatch):
+    # pqcrypto draws its own randomness, so explicit randomness could only
+    # run the pure-Python reference: refused before m reaches it.
+    monkeypatch.setattr(ml_kem, "_k_pke_encrypt", lambda *a: pytest.fail("encrypt reached"))
+    ek, dk = ml_kem.ml_kem_keygen(_fixture("ml-kem seed", 64))
+    with pytest.raises(RuntimeError, match="cannot use the pqcrypto backend"):
+        ml_kem.ml_kem_encaps(ek, randomness=_fixture("ml-kem m", 32))
+    hybrid_ek, _hybrid_dk = hybrid_kem.hybrid_kem_keygen(_fixture("hybrid kem seed 3", 96))
+    with pytest.raises(RuntimeError, match="cannot use the pqcrypto backend"):
+        hybrid_kem.hybrid_kem_encaps(hybrid_ek, randomness=_fixture("hybrid m", 64))
+    ct, ss = ml_kem.ml_kem_encaps(ek)  # fresh randomness: pqcrypto path
     assert ml_kem.ml_kem_decaps(dk, ct) == ss
 
 
