@@ -1,18 +1,23 @@
 # Copyright (c) 2026 Lock.com — PolyForm Shield License 1.0.0
 
-"""Argon2id (RFC 9106) — Pure Python, zero dependencies.
+"""Argon2id (RFC 9106).
 
-Provides a fallback when argon2-cffi is not installed. Uses Blake2b for
-hashing and the fBlaMka compression function per the RFC 9106 spec.
-
-Performance note: the C library (argon2-cffi) is ~100x faster. This
-module exists so the wallet works without compiled dependencies — the
-wrapper in this package auto-selects the faster backend when available.
+Key derivation runs in the C library (argon2-cffi). The pure-Python
+implementation below (Blake2b plus the fBlaMka compression function per
+RFC 9106) is reference code for known-answer tests: it is about 100x slower
+and, like all pure-Python secret arithmetic in CPython, not constant time,
+so ``hash_secret_raw`` refuses to fall back to it unless
+UQS_ALLOW_PURE_PYTHON_SECRETS=1 is set for test vectors or development.
 """
 
 import struct
 
 from crypto.secure_wipe import wipe
+
+try:
+    from .native_backend import require_pure_python_allowed
+except ImportError:
+    from crypto.native_backend import require_pure_python_allowed
 
 # ── Constants ────────────────────────────────────────────────────
 
@@ -365,8 +370,12 @@ def _fill_segment(memory, pass_, slice_, lane, lanes, lane_len, seg_len,
 
 # ── Main Argon2id function ───────────────────────────────────────
 
-def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
-    """Argon2id key derivation (RFC 9106).
+def _argon2id_pure(password, salt, time_cost, memory_cost, parallelism, hash_len):
+    """Pure-Python Argon2id reference (RFC 9106). Test vectors only.
+
+    Production callers use ``argon2id`` or ``hash_secret_raw`` below, which
+    run in argon2-cffi and gate this function behind
+    UQS_ALLOW_PURE_PYTHON_SECRETS=1.
 
     Args:
         password: Secret bytes.
@@ -529,8 +538,9 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
                     hash_len, type, *, return_bytearray: bool = False):
     """Argon2 KDF — compatible with argon2.low_level.hash_secret_raw.
 
-    Uses the C library (argon2-cffi) when available, otherwise falls
-    back to the pure Python implementation above.
+    Uses the C library (argon2-cffi). Without it the call raises
+    RuntimeError unless UQS_ALLOW_PURE_PYTHON_SECRETS=1 selects the
+    pure-Python reference above (test vectors and development only).
 
     When the secret is a bytearray or memoryview AND the cffi low-level
     bindings are available, the buffer is handed to the C function
@@ -602,7 +612,10 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
         raise ValueError(
             f"Pure Python backend only supports Argon2id (type=2), got {type_val}")
 
-    result = argon2id(secret, salt, time_cost, memory_cost, parallelism, hash_len)
+    # Reference implementation: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
+    require_pure_python_allowed("Argon2id key derivation", "argon2-cffi")
+    result = _argon2id_pure(
+        secret, salt, time_cost, memory_cost, parallelism, hash_len)
     if return_bytearray:
         try:
             from .secure_wipe import wipe
@@ -612,3 +625,21 @@ def hash_secret_raw(secret, salt, time_cost, memory_cost, parallelism,
         wipe(result)
         return mutable
     return result
+
+
+def argon2id(password, salt, time_cost, memory_cost, parallelism, hash_len):
+    """Argon2id key derivation (RFC 9106) through argon2-cffi.
+
+    Same signature as the pure-Python reference. Runs in the C library;
+    without argon2-cffi it raises RuntimeError unless
+    UQS_ALLOW_PURE_PYTHON_SECRETS=1 selects the reference code.
+    """
+    return hash_secret_raw(
+        secret=password,
+        salt=salt,
+        time_cost=time_cost,
+        memory_cost=memory_cost,
+        parallelism=parallelism,
+        hash_len=hash_len,
+        type=Type.ID,
+    )

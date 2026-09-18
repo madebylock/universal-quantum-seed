@@ -13,13 +13,16 @@ Sizes:
     Public key:  32 bytes (u-coordinate of [sk] * basepoint)
     Shared secret: 32 bytes
 
-Best-effort constant-time: the Montgomery ladder uses branchless conditional
-swaps (XOR-mask technique) instead of data-dependent branches.  While the
-CPython interpreter cannot provide hardware-level constant-time guarantees,
-this implementation eliminates all *algorithmic* timing channels.
+Secret operations (keygen, Diffie-Hellman, public-key recovery) require a
+native constant-time backend: PyNaCl (libsodium) first, then cryptography
+(OpenSSL). Without one they raise RuntimeError instead of degrading.
 
-When pynacl (libsodium) is available, keygen/DH delegate to C for
-additional side-channel resistance.
+The pure-Python Montgomery ladder below is branch-free at the Python level
+(XOR-mask conditional swaps, no data-dependent branches), but CPython big
+integers still leak secret-dependent timing and allocation patterns, so it
+is reference code for RFC 7748 test vectors only. Set
+UQS_ALLOW_PURE_PYTHON_SECRETS=1 to run it deliberately (see
+crypto/native_backend.py).
 """
 
 import hmac
@@ -27,13 +30,28 @@ import hmac
 # ── Constant-time backend ──────────────────────────────────────
 # pynacl (libsodium) provides constant-time X25519 operations.
 # When available, keygen/DH delegate to C for side-channel resistance.
-# Pure Python internals are retained as fallback.
+# cryptography (OpenSSL) is the second native backend. Pure Python
+# internals are retained for test vectors only.
 _HAS_NACL = False
 try:
     import nacl.bindings
     _HAS_NACL = True
 except ImportError:
     pass
+
+_HAS_CRYPTOGRAPHY_X25519 = False
+try:
+    from cryptography.hazmat.primitives.asymmetric import x25519 as _crypto_x25519
+    from cryptography.hazmat.primitives import serialization as _crypto_serialization
+    _HAS_CRYPTOGRAPHY_X25519 = True
+except ImportError:
+    _crypto_x25519 = None
+    _crypto_serialization = None
+
+try:
+    from .native_backend import require_native_backend
+except ImportError:
+    from crypto.native_backend import require_native_backend
 
 # ── Secure memory utilities (libsodium-backed) ────────────────
 _HAS_SODIUM = False
@@ -182,11 +200,15 @@ def x25519_keygen(seed):
     # scalar from another path.
     sk = _clamp(seed)
 
+    _require_native_backend()
     if _HAS_NACL:
         # libsodium: constant-time scalar * basepoint
         pk = nacl.bindings.crypto_scalarmult_base(sk)
         return sk, pk
+    if _HAS_CRYPTOGRAPHY_X25519:
+        return sk, _cryptography_public_key_from_private(sk)
 
+    # Reference ladder: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     basepoint = (9).to_bytes(32, 'little')
     u = _x25519_raw(sk, basepoint)
     pk = _encode_u(u)
@@ -205,6 +227,39 @@ def _reject_low_order_shared_secret(result):
         raise ValueError("X25519: low-order input point (all-zero shared secret)")
 
 
+def _require_native_backend():
+    """Fail closed before a secret scalar reaches the Python ladder."""
+    require_native_backend(
+        _HAS_NACL or _HAS_CRYPTOGRAPHY_X25519,
+        "X25519 secret operations",
+        "PyNaCl (libsodium) or cryptography (OpenSSL)",
+    )
+
+
+def _cryptography_public_key_from_private(sk):
+    """[sk] * basepoint through OpenSSL; the scalar copy is zeroed after use."""
+    sk_buf = bytearray(sk)
+    try:
+        private_key = _crypto_x25519.X25519PrivateKey.from_private_bytes(sk_buf)
+        return private_key.public_key().public_bytes(
+            encoding=_crypto_serialization.Encoding.Raw,
+            format=_crypto_serialization.PublicFormat.Raw,
+        )
+    finally:
+        _secure_zero(sk_buf)
+
+
+def _cryptography_exchange(sk, pk):
+    """X25519 Diffie-Hellman through OpenSSL; raises on a low-order peer key."""
+    sk_buf = bytearray(sk)
+    try:
+        private_key = _crypto_x25519.X25519PrivateKey.from_private_bytes(sk_buf)
+        peer_key = _crypto_x25519.X25519PublicKey.from_public_bytes(bytes(pk))
+        return private_key.exchange(peer_key)
+    finally:
+        _secure_zero(sk_buf)
+
+
 def x25519(sk, pk):
     """Compute X25519 shared secret.
 
@@ -220,12 +275,18 @@ def x25519(sk, pk):
     """
     _require_dh_lengths(sk, pk)
 
+    _require_native_backend()
     if _HAS_NACL:
         # libsodium: constant-time scalar multiplication
         result = nacl.bindings.crypto_scalarmult(sk, pk)
         _reject_low_order_shared_secret(result)
         return result
+    if _HAS_CRYPTOGRAPHY_X25519:
+        result = _cryptography_exchange(sk, pk)
+        _reject_low_order_shared_secret(result)
+        return result
 
+    # Reference ladder: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     u = _x25519_raw(sk, pk)
     result = _encode_u(u)
     _reject_low_order_shared_secret(result)
@@ -244,8 +305,12 @@ def x25519_pk_from_sk(sk):
     Returns:
         32-byte public key (u-coordinate of [sk] * basepoint 9).
     """
+    _require_native_backend()
     if _HAS_NACL:
         return nacl.bindings.crypto_scalarmult_base(sk)
+    if _HAS_CRYPTOGRAPHY_X25519:
+        return _cryptography_public_key_from_private(sk)
+    # Reference ladder: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     return _encode_u(_x25519_raw(sk, (9).to_bytes(32, 'little')))
 
 
@@ -256,19 +321,29 @@ def _x25519_raw_bytes_no_reject(sk, pk):
     instead of raising. Used by hybrid KEM for constant-time decapsulation
     (IND-CCA2: must not branch on validity of the classical component).
 
-    Prefers libsodium (constant-time C) over pure Python (variable-size
-    int timing leak is worse than any exception-path difference).
+    libsodium and OpenSSL both refuse to return an all-zero shared secret
+    (the RFC 7748 low-order check) by raising. That refusal is the only
+    failure either backend reports for well-formed 32-byte inputs, so it is
+    mapped back to the all-zero result the caller expects. The secret scalar
+    is never routed through the Python ladder on a native error: a peer who
+    can choose ``pk`` could otherwise trigger variable-time arithmetic on
+    demand.
     """
     _require_dh_lengths(sk, pk)
     if _HAS_NACL:
         try:
             return nacl.bindings.crypto_scalarmult(sk, pk)
         except Exception:
-            # Fall through to the pure-Python path on libsodium error.
-            # Returning _ZERO_32 here would be wrong: RFC 7748 zeros are a
-            # valid low-order result, so substituting them on a library
-            # exception silently masks bugs and looks like a successful DH.
             pass
+    if _HAS_CRYPTOGRAPHY_X25519:
+        try:
+            return _cryptography_exchange(sk, pk)
+        except Exception:
+            pass
+    if _HAS_NACL or _HAS_CRYPTOGRAPHY_X25519:
+        return _ZERO_32
+    _require_native_backend()
+    # Reference ladder: reachable only with UQS_ALLOW_PURE_PYTHON_SECRETS=1.
     return _encode_u(_x25519_raw(sk, pk))
 
 

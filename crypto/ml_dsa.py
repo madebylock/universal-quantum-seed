@@ -31,6 +31,11 @@ Notes:
       signatures (uses rnd=0^32).
     - Best-effort constant-time: uses Barrett reduction (no variable-time `%`),
       branchless conditionals, and no early-exit loops on secret data.
+    - Signing runs in PQClean through the ``pqcrypto`` package. Without it,
+      or in modes pqcrypto cannot serve (non-empty context, explicit rnd,
+      deterministic), ml_sign raises RuntimeError unless
+      UQS_ALLOW_PURE_PYTHON_SECRETS=1 selects the pure-Python reference
+      (test vectors and development only, see crypto/native_backend.py).
 """
 
 import hashlib
@@ -42,7 +47,8 @@ import struct
 # When available, sign/verify delegate to C for ~100x speedup.
 # Only used when context is empty (pqcrypto uses FIPS 204 pure mode
 # with empty context; non-empty context requires pure Python).
-# Keygen still uses pure Python (deterministic seed support).
+# Seeded keygen stays in Python (pqcrypto has no seeded keygen). Signing
+# modes that pqcrypto cannot serve refuse to run (see native_backend).
 _HAS_PQCRYPTO = False
 try:
     from pqcrypto.sign.ml_dsa_65 import (
@@ -52,6 +58,41 @@ try:
     _HAS_PQCRYPTO = True
 except ImportError:
     pass
+
+try:
+    from .native_backend import (
+        PURE_PYTHON_SECRETS_ENV,
+        pure_python_secrets_allowed,
+        require_native_backend,
+    )
+except ImportError:
+    from crypto.native_backend import (
+        PURE_PYTHON_SECRETS_ENV,
+        pure_python_secrets_allowed,
+        require_native_backend,
+    )
+
+
+def _require_pqcrypto(operation):
+    """Fail closed before a signing key reaches the Python NTT."""
+    require_native_backend(
+        _HAS_PQCRYPTO, operation, "the pqcrypto package (PQClean ML-DSA-65)")
+
+
+def _require_pure_python_signing_allowed(operation):
+    """Refuse pure-Python signing modes that pqcrypto cannot serve."""
+    if pure_python_secrets_allowed():
+        return
+    if _HAS_PQCRYPTO:
+        raise RuntimeError(
+            f"{operation} cannot use the pqcrypto backend with a non-empty "
+            "context, explicit randomness or deterministic mode, and "
+            "pure-Python ML-DSA signing is disabled because it is not constant "
+            "time. Domain-prefix the message and sign with an empty context, or "
+            f"set {PURE_PYTHON_SECRETS_ENV}=1 only for deterministic test vectors "
+            "and development."
+        )
+    _require_pqcrypto(operation)
 
 # ── Secure memory utilities (libsodium-backed) ────────────────
 _HAS_SODIUM = False
@@ -1120,6 +1161,11 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
         if not _c_dsa_verify(verify_pk, bytes(message), sig):
             raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
         return sig
+
+    if ctx != b"" or rnd is not None or deterministic:
+        _require_pure_python_signing_allowed("ML-DSA signing")
+    else:
+        _require_pqcrypto("ML-DSA signing")
 
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
     sig = _ml_sign_internal(m_prime, sk_bytes, rnd=rnd, deterministic=deterministic)

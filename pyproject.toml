@@ -29,6 +29,17 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Security :: Cryptography",
 ]
+# Secret operations run only in these native constant-time libraries; the
+# bundled pure-Python code is reference material for verification and tests.
+dependencies = [
+    "PyNaCl>=1.5",
+    "cryptography>=42",
+    "argon2-cffi>=21.3",
+]
+
+[project.optional-dependencies]
+# ML-KEM-768 decapsulation and ML-DSA-65 signing (PQClean bindings).
+pq = ["pqcrypto>=0.3.4"]
 
 [project.urls]
 Homepage = "https://github.com/madebylock/universal-quantum-seed"

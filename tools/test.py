@@ -68,15 +68,40 @@ def _get_modules():
     )
 
 
+_PURE_PYTHON_SECRETS_ENV = "UQS_ALLOW_PURE_PYTHON_SECRETS"
+
+
+def _enable_pure_python_secrets():
+    """Let the pure-Python reference paths handle test secrets.
+
+    Secret operations fail closed without their native backend; the tests
+    that exercise the reference code set this override for their duration.
+    Returns the previous environment value for _disable_pure_python_secrets().
+    """
+    previous = os.environ.get(_PURE_PYTHON_SECRETS_ENV)
+    os.environ[_PURE_PYTHON_SECRETS_ENV] = "1"
+    return previous
+
+
+def _disable_pure_python_secrets(previous):
+    """Undo _enable_pure_python_secrets()."""
+    if previous is None:
+        os.environ.pop(_PURE_PYTHON_SECRETS_ENV, None)
+    else:
+        os.environ[_PURE_PYTHON_SECRETS_ENV] = previous
+
+
 def _force_pure_python():
     """Disable pynacl/libsodium in ALL crypto modules.
 
     Patches the module-level _HAS_NACL / _HAS_SODIUM flags so all code
-    paths use the pure Python fallback.  Call _restore_backends() to undo.
+    paths use the pure Python reference code, and sets the test-only
+    override that lets secrets reach it.  Call _restore_backends() to undo.
     """
     ed, x, kem, dsa, slh, hdsa, hkem = _get_modules()
 
     state = {
+        "pure_env": _enable_pure_python_secrets(),
         "ed_nacl": ed._HAS_NACL,
         "ed_sodium": ed._HAS_SODIUM,
         "x_nacl": x._HAS_NACL,
@@ -89,10 +114,12 @@ def _force_pure_python():
         "hdsa_sodium": hdsa._HAS_SODIUM,
         "hkem_sodium": hkem._HAS_SODIUM,
     }
+    state["x_cryptography"] = x._HAS_CRYPTOGRAPHY_X25519
     ed._HAS_NACL = False
     ed._HAS_SODIUM = False
     x._HAS_NACL = False
     x._HAS_SODIUM = False
+    x._HAS_CRYPTOGRAPHY_X25519 = False
     kem._HAS_SODIUM = False
     kem._HAS_PQCRYPTO = False
     dsa._HAS_SODIUM = False
@@ -111,6 +138,8 @@ def _restore_backends(state):
     ed._HAS_SODIUM = state["ed_sodium"]
     x._HAS_NACL = state["x_nacl"]
     x._HAS_SODIUM = state["x_sodium"]
+    x._HAS_CRYPTOGRAPHY_X25519 = state["x_cryptography"]
+    _disable_pure_python_secrets(state["pure_env"])
     kem._HAS_SODIUM = state["kem_sodium"]
     kem._HAS_PQCRYPTO = state["kem_pqcrypto"]
     dsa._HAS_SODIUM = state["dsa_sodium"]
@@ -865,10 +894,15 @@ class TestX25519Iterated(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════
 
 class TestMLDSA65(unittest.TestCase):
-    """ML-DSA-65 (FIPS 204) tests including NIST ACVP KATs."""
+    """ML-DSA-65 (FIPS 204) tests including NIST ACVP KATs.
+
+    The deterministic and context-string cases run the pure-Python signer,
+    which is gated behind the test-only override.
+    """
 
     @classmethod
     def setUpClass(cls):
+        cls._pure_env = _enable_pure_python_secrets()
         from crypto.ml_dsa import (
             ml_keygen, ml_sign, ml_verify, _ntt, _inv_ntt,
             _PK_SIZE, _SK_SIZE, _SIG_SIZE, _Q, _N,
@@ -885,6 +919,10 @@ class TestMLDSA65(unittest.TestCase):
         cls._N = _N
         cls.seed = _h("a0b1c2d3e4f56789a0b1c2d3e4f56789a0b1c2d3e4f56789a0b1c2d3e4f56789")
         cls.sk, cls.pk = ml_keygen(cls.seed)
+
+    @classmethod
+    def tearDownClass(cls):
+        _disable_pure_python_secrets(cls._pure_env)
 
     def test_ntt_roundtrip(self):
         poly = [i * 37 % self._Q for i in range(self._N)]
@@ -2066,11 +2104,17 @@ class TestBlake2b(unittest.TestCase):
 
 
 class TestArgon2idPure(unittest.TestCase):
-    """Test pure Python Argon2id against reference vectors."""
+    """Test the pure Python Argon2id reference against known vectors."""
+
+    def setUp(self):
+        self._pure_env = _enable_pure_python_secrets()
+
+    def tearDown(self):
+        _disable_pure_python_secrets(self._pure_env)
 
     def _run(self, vec):
-        from crypto.argon2 import argon2id
-        result = argon2id(
+        from crypto.argon2 import _argon2id_pure
+        result = _argon2id_pure(
             vec["password"], vec["salt"], vec["time_cost"],
             vec["memory_cost"], vec["parallelism"], vec["hash_len"],
         )
@@ -2140,16 +2184,20 @@ class TestArgon2idCrossBackend(unittest.TestCase):
             self._cffi_type = Type.ID
         except ImportError:
             self.skipTest("argon2-cffi not installed")
+        self._pure_env = _enable_pure_python_secrets()
+
+    def tearDown(self):
+        _disable_pure_python_secrets(self._pure_env)
 
     def _run(self, vec):
-        from crypto.argon2 import argon2id
+        from crypto.argon2 import _argon2id_pure
         cffi_result = self._cffi_hash(
             secret=vec["password"], salt=vec["salt"],
             time_cost=vec["time_cost"], memory_cost=vec["memory_cost"],
             parallelism=vec["parallelism"], hash_len=vec["hash_len"],
             type=self._cffi_type,
         )
-        pure_result = argon2id(
+        pure_result = _argon2id_pure(
             vec["password"], vec["salt"], vec["time_cost"],
             vec["memory_cost"], vec["parallelism"], vec["hash_len"],
         )
@@ -2208,6 +2256,12 @@ class TestArgon2idWrapper(unittest.TestCase):
 
 class TestArgon2idFallback(unittest.TestCase):
     """Test hash_secret_raw with cffi disabled (forces pure Python path)."""
+
+    def setUp(self):
+        self._pure_env = _enable_pure_python_secrets()
+
+    def tearDown(self):
+        _disable_pure_python_secrets(self._pure_env)
 
     def _run(self, vec):
         import crypto.argon2 as mod
@@ -2416,6 +2470,7 @@ class TestAesGcmPurePython(unittest.TestCase):
     def setUpClass(cls):
         import crypto.aes_gcm as mod
         cls._mod = mod
+        cls._pure_env = _enable_pure_python_secrets()
         cls._saved = mod._HAS_CRYPTO
         mod._HAS_CRYPTO = False
         assert not mod._HAS_CRYPTO, "Failed to disable cryptography for AES-GCM"
@@ -2423,6 +2478,7 @@ class TestAesGcmPurePython(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._mod._HAS_CRYPTO = cls._saved
+        _disable_pure_python_secrets(cls._pure_env)
 
     def _h(self, hex_str: str) -> bytes:
         return bytes.fromhex(hex_str)
@@ -2672,20 +2728,32 @@ class TestPQCryptoAcceleration(unittest.TestCase):
             self.skipTest("pqcrypto not installed")
         sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
 
-        # Sign with pure Python (deterministic forces fallback)
-        sig = self.dsa.ml_sign(b"cross-backend", sk, ctx=b"",
-                               deterministic=True)
+        # Sign with pure Python (deterministic mode is not served by
+        # pqcrypto; the test-only override admits the reference signer)
+        pure_env = _enable_pure_python_secrets()
+        try:
+            sig = self.dsa.ml_sign(b"cross-backend", sk, ctx=b"",
+                                   deterministic=True)
+        finally:
+            _disable_pure_python_secrets(pure_env)
 
         # Verify with C
         ok = self.dsa.ml_verify(b"cross-backend", sig, pk, ctx=b"")
         self.assertTrue(ok, "Pure Python sign / C verify failed")
 
     def test_dsa_nonempty_ctx_fallback(self):
-        """ML-DSA: non-empty context falls back to pure Python."""
+        """ML-DSA: non-empty context uses the pure Python reference signer."""
         if not self.has_pqcrypto:
             self.skipTest("pqcrypto not installed")
         sk, pk = self.dsa.ml_keygen(seed=os.urandom(32))
-        sig = self.dsa.ml_sign(b"ctx-test", sk, ctx=b"my-context")
+        with self.assertRaises(RuntimeError):
+            # Refused in production mode: pqcrypto cannot sign with a context.
+            self.dsa.ml_sign(b"ctx-test", sk, ctx=b"my-context")
+        pure_env = _enable_pure_python_secrets()
+        try:
+            sig = self.dsa.ml_sign(b"ctx-test", sk, ctx=b"my-context")
+        finally:
+            _disable_pure_python_secrets(pure_env)
         self.assertTrue(self.dsa.ml_verify(b"ctx-test", sig, pk,
                                            ctx=b"my-context"))
         # Wrong context must fail
@@ -2760,10 +2828,10 @@ if __name__ == "__main__":
     print("Universal Quantum Seed: Comprehensive Crypto Test Suite")
     print("=" * 68)
     import crypto.ml_dsa as _dsa
-    print(f"  pynacl (libsodium):  {'available' if _ed._HAS_NACL else 'NOT installed (pure Python only)'}")
+    print(f"  pynacl (libsodium):  {'available' if _ed._HAS_NACL else 'NOT installed (secret operations refused)'}")
     print(f"  libsodium memops:    {'available' if _kem._HAS_SODIUM else 'NOT installed (fallback zeroing)'}")
-    print(f"  pqcrypto (PQClean):  {'available' if _kem._HAS_PQCRYPTO else 'NOT installed (pure Python fallback)'}")
-    print(f"  argon2-cffi:         {'available' if _argon2._HAS_CFFI else 'NOT installed (pure Python fallback)'}")
+    print(f"  pqcrypto (PQClean):  {'available' if _kem._HAS_PQCRYPTO else 'NOT installed (secret operations refused)'}")
+    print(f"  argon2-cffi:         {'available' if _argon2._HAS_CFFI else 'NOT installed (key derivation refused)'}")
     print("=" * 68)
 
     t0 = time.perf_counter()
