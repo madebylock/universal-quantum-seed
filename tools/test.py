@@ -1000,15 +1000,24 @@ class TestMLDSA65(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════
 
 class TestMLKEMKAT(unittest.TestCase):
-    """ML-KEM-768 known-answer / regression tests."""
+    """ML-KEM-768 known-answer / regression tests.
+
+    Encapsulation with fixed randomness runs the pure-Python reference,
+    which is gated behind the test-only override.
+    """
 
     @classmethod
     def setUpClass(cls):
+        cls._pure_env = _enable_pure_python_secrets()
         from crypto.ml_kem import ml_kem_keygen, ml_kem_encaps, ml_kem_decaps
         cls.keygen = staticmethod(ml_kem_keygen)
         cls.encaps = staticmethod(ml_kem_encaps)
         cls.decaps = staticmethod(ml_kem_decaps)
         cls.ek, cls.dk = ml_kem_keygen(_KAT_KEYGEN_SEED)
+
+    @classmethod
+    def tearDownClass(cls):
+        _disable_pure_python_secrets(cls._pure_env)
 
     def test_keygen_sizes(self):
         self.assertEqual(len(self.ek), 1184)
@@ -1123,14 +1132,23 @@ class TestMLKEMCompress(unittest.TestCase):
 
 
 class TestMLKEMACVP(unittest.TestCase):
-    """ML-KEM-768 NIST ACVP known-answer tests."""
+    """ML-KEM-768 NIST ACVP known-answer tests.
+
+    Encapsulation with the ACVP randomness runs the pure-Python reference,
+    which is gated behind the test-only override.
+    """
 
     @classmethod
     def setUpClass(cls):
+        cls._pure_env = _enable_pure_python_secrets()
         from crypto.ml_kem import ml_kem_keygen, ml_kem_encaps, ml_kem_decaps
         cls.keygen = staticmethod(ml_kem_keygen)
         cls.encaps = staticmethod(ml_kem_encaps)
         cls.decaps = staticmethod(ml_kem_decaps)
+
+    @classmethod
+    def tearDownClass(cls):
+        _disable_pure_python_secrets(cls._pure_env)
 
     def test_keygen_ek_matches_acvp(self):
         seed = _h(_ML_KEM_KEYGEN_D_26) + _h(_ML_KEM_KEYGEN_Z_26)
@@ -1369,10 +1387,15 @@ class TestHybridDSA(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════
 
 class TestHybridKEM(unittest.TestCase):
-    """Hybrid X25519 + ML-KEM-768 tests."""
+    """Hybrid X25519 + ML-KEM-768 tests.
+
+    The deterministic-encapsulation cases pass explicit randomness, which
+    runs the pure-Python ML-KEM reference behind the test-only override.
+    """
 
     @classmethod
     def setUpClass(cls):
+        cls._pure_env = _enable_pure_python_secrets()
         from crypto.hybrid_kem import (
             hybrid_kem_keygen, hybrid_kem_encaps, hybrid_kem_decaps,
             HYBRID_KEM_EK_SIZE, HYBRID_KEM_DK_SIZE, HYBRID_KEM_CT_SIZE,
@@ -1383,6 +1406,10 @@ class TestHybridKEM(unittest.TestCase):
         cls.EK_SIZE = HYBRID_KEM_EK_SIZE
         cls.DK_SIZE = HYBRID_KEM_DK_SIZE
         cls.CT_SIZE = HYBRID_KEM_CT_SIZE
+
+    @classmethod
+    def tearDownClass(cls):
+        _disable_pure_python_secrets(cls._pure_env)
 
     def test_sizes(self):
         ek, dk = self.keygen(os.urandom(96))
@@ -2649,8 +2676,15 @@ class TestPQCryptoAcceleration(unittest.TestCase):
             self.skipTest("pqcrypto not installed")
         ek, dk = self.kem.ml_kem_keygen(seed=os.urandom(64))
 
-        # Encaps with pure Python (explicit randomness forces fallback)
-        ct, ss_enc = self.kem.ml_kem_encaps(ek, randomness=os.urandom(32))
+        # Explicit randomness is not served by pqcrypto: refused in
+        # production mode, admitted by the test-only override.
+        with self.assertRaises(RuntimeError):
+            self.kem.ml_kem_encaps(ek, randomness=os.urandom(32))
+        pure_env = _enable_pure_python_secrets()
+        try:
+            ct, ss_enc = self.kem.ml_kem_encaps(ek, randomness=os.urandom(32))
+        finally:
+            _disable_pure_python_secrets(pure_env)
 
         # Decaps with C
         ss_dec = self.kem.ml_kem_decaps(dk, ct)

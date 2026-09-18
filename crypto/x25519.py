@@ -322,23 +322,26 @@ def _x25519_raw_bytes_no_reject(sk, pk):
     (IND-CCA2: must not branch on validity of the classical component).
 
     libsodium and OpenSSL both refuse to return an all-zero shared secret
-    (the RFC 7748 low-order check) by raising. That refusal is the only
-    failure either backend reports for well-formed 32-byte inputs, so it is
-    mapped back to the all-zero result the caller expects. The secret scalar
-    is never routed through the Python ladder on a native error: a peer who
-    can choose ``pk`` could otherwise trigger variable-time arithmetic on
-    demand.
+    (the RFC 7748 low-order check) by raising: libsodium as
+    nacl.exceptions.RuntimeError, OpenSSL as ValueError. Only that refusal
+    is mapped back to the all-zero result the caller expects. Any other
+    backend error (a TypeError for a scalar that is not ``bytes``, say)
+    propagates, because mapping it to zeros would hand the caller a silent
+    wrong secret. The secret scalar is never routed through the Python
+    ladder on a native error: a peer who can choose ``pk`` could otherwise
+    trigger variable-time arithmetic on demand.
     """
     _require_dh_lengths(sk, pk)
+    pk = bytes(pk)  # public value; libsodium's binding accepts bytes only
     if _HAS_NACL:
         try:
             return nacl.bindings.crypto_scalarmult(sk, pk)
-        except Exception:
+        except RuntimeError:
             pass
     if _HAS_CRYPTOGRAPHY_X25519:
         try:
             return _cryptography_exchange(sk, pk)
-        except Exception:
+        except ValueError:
             pass
     if _HAS_NACL or _HAS_CRYPTOGRAPHY_X25519:
         return _ZERO_32
