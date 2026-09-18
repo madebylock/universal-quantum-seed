@@ -169,3 +169,36 @@ def test_seed_v1_quantum_seed_vectors():
         )
         assert derived.hex() == vector["seed_hex"], vector["id"]
         assert len(derived) == vector["seed_length"], vector["id"]
+
+
+def test_seed_v1_quantum_keypair_vectors():
+    """Pin the keypair each KAT quantum seed expands to (SHA-256 of the secret
+    and public key bytes), in lockstep with the other implementations, so a
+    change of keygen backend cannot alter a derived key without this test
+    noticing."""
+    kat_path = Path(__file__).with_name("kat") / "seed_v1.json"
+    kat = json.loads(kat_path.read_bytes().decode("utf-8"))
+    vectors = kat.get("quantum_keypair") or []
+    assert vectors, "shared KAT carries no quantum keypair vectors"
+    assert {v["algorithm"] for v in vectors} == {
+        "ml-dsa-65",
+        "slh-dsa-shake-128s",
+        "ml-kem-768",
+        "hybrid-dsa-65",
+        "hybrid-kem-768",
+    }
+    for vector in vectors:
+        sk, pk = uqs.generate_quantum_keypair(
+            bytes.fromhex(vector["master_key_hex"]),
+            vector["algorithm"],
+            vector["key_index"],
+            _word_count=36,
+        )
+        assert len(sk) == vector["secret_key_length"], vector["id"]
+        assert len(pk) == vector["public_key_length"], vector["id"]
+        assert (
+            hashlib.sha256(bytes(sk)).hexdigest() == vector["secret_key_sha256"]
+        ), vector["id"]
+        assert (
+            hashlib.sha256(bytes(pk)).hexdigest() == vector["public_key_sha256"]
+        ), vector["id"]
