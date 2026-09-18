@@ -42,6 +42,8 @@ import hashlib
 import hmac
 import os
 import struct
+import threading
+from collections import OrderedDict
 
 # ── C-accelerated backend (pqcrypto / PQClean) ──────────────────
 # When available, sign/verify delegate to C for ~100x speedup.
@@ -799,6 +801,92 @@ _SK_SIZE = 128 + (_L + _K) * 128 + _K * 416  # 128 + 11*128 + 6*416 = 4032
 _SIG_SIZE = _C_TILDE_BYTES + _L * 640 + _OMEGA + _K  # 48 + 3200 + 61 = 3309
 
 
+# ── Public keys by tr ──────────────────────────────────────────────
+# Verify-after-sign needs the signer's public key. Re-deriving it from the
+# secret key (_pk_from_sk) decodes s1, s2 and runs the Python NTT over them
+# on every signature; CPython's integer paths differ for zero, positive and
+# negative coefficients, so a co-resident cache probe learns the class of
+# every secret coefficient per signature. The public key is public, so it
+# is remembered here, keyed by tr = SHAKE256(pk) (public, stored inside the
+# secret key, FIPS 204 Algorithm 6): the lookup indexes memory by a public
+# value only, and a process derives a key from s1, s2 at most once, never
+# when keygen or the caller already supplied the public key.
+_TR_OFFSET = 64
+_TR_SIZE = 64
+_PUBLIC_KEYS_MAX = 64
+_PUBLIC_KEYS = OrderedDict()
+_PUBLIC_KEYS_LOCK = threading.Lock()
+
+
+def _tr_of_sk(sk_bytes):
+    return bytes(sk_bytes[_TR_OFFSET:_TR_OFFSET + _TR_SIZE])
+
+
+def _public_key_binds_to_tr(pk_bytes, tr):
+    """True when tr = SHAKE256(pk, 64), compared in constant time."""
+    digest = hashlib.shake_256(bytes(pk_bytes)).digest(_TR_SIZE)
+    return hmac.compare_digest(digest, tr)
+
+
+def _remember_public_key(tr, pk_bytes):
+    pk = bytes(pk_bytes)
+    with _PUBLIC_KEYS_LOCK:
+        _PUBLIC_KEYS[tr] = pk
+        _PUBLIC_KEYS.move_to_end(tr)
+        while len(_PUBLIC_KEYS) > _PUBLIC_KEYS_MAX:
+            _PUBLIC_KEYS.popitem(last=False)
+
+
+def _cached_public_key(tr):
+    with _PUBLIC_KEYS_LOCK:
+        pk = _PUBLIC_KEYS.get(tr)
+        if pk is not None:
+            _PUBLIC_KEYS.move_to_end(tr)
+        return pk
+
+
+def ml_public_key_for(sk_bytes):
+    """Return the public key of an ML-DSA-65 secret key.
+
+    Keys made by ml_keygen, and public keys a caller has passed to ml_sign
+    as verify_pk_bytes, are answered from the tr-keyed table without
+    touching s1 or s2. Any other key is derived once with _pk_from_sk and,
+    when it binds to the tr stored in the secret key, remembered so the
+    pure-Python derivation runs at most once per key per process. Callers
+    that hold the public key should pass it to ml_sign instead.
+    """
+    if len(sk_bytes) != _SK_SIZE:
+        raise ValueError(f"secret key must be {_SK_SIZE} bytes, got {len(sk_bytes)}")
+    tr = _tr_of_sk(sk_bytes)
+    pk = _cached_public_key(tr)
+    if pk is not None:
+        return pk
+    pk = bytes(_pk_from_sk(bytes(sk_bytes)))
+    if _public_key_binds_to_tr(pk, tr):
+        _remember_public_key(tr, pk)
+    return pk
+
+
+def _verify_public_key_for(sk_bytes, verify_pk_bytes):
+    """Public key for verify-after-sign.
+
+    A caller-supplied key must be the public key of this secret key (its
+    SHAKE256 must equal the tr inside sk); a foreign or tampered key is
+    refused before any signature is produced. Without one, the remembered
+    key is used.
+    """
+    if verify_pk_bytes is None:
+        return ml_public_key_for(sk_bytes)
+    pk = bytes(verify_pk_bytes)
+    tr = _tr_of_sk(sk_bytes)
+    if not _public_key_binds_to_tr(pk, tr):
+        raise RuntimeError(
+            "ML-DSA verify_pk_bytes is not the public key of this secret key"
+        )
+    _remember_public_key(tr, pk)
+    return pk
+
+
 # ── Core Algorithms ────────────────────────────────────────────────
 
 def ml_keygen(seed):
@@ -851,6 +939,7 @@ def ml_keygen(seed):
     # Step 7: Encode secret key
     sk_bytes = _sk_encode(rho, K, tr, s1, s2, t0_list)
 
+    _remember_public_key(tr, pk_bytes)
     return sk_bytes, pk_bytes
 
 
@@ -858,7 +947,9 @@ def _pk_from_sk(sk_bytes):
     """Reconstruct public key from secret key.
 
     Decodes rho and recomputes t1 = (A*s1 + s2) >> d from the secret
-    vectors stored in the SK. Used for verify-after-sign.
+    vectors stored in the SK, in pure Python. Signing gets the public key
+    from ml_public_key_for (keygen output or caller-supplied, keyed by tr);
+    this derivation is the once-per-key fallback and the reference for tests.
     """
     rho, K, tr, s1, s2, t0 = _sk_decode(sk_bytes)
     A_hat = _expand_A(rho)
@@ -1124,11 +1215,13 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
         ctx: Optional context string (0-255 bytes, default empty).
         deterministic: If True, use rnd=0^32 (no randomness).
         rnd: Explicit 32-byte randomness (overrides deterministic flag).
-        verify_pk_bytes: Optional public key for verify-after-sign. When
-            given, the verify step checks against this independently-supplied
-            key instead of one re-derived from sk_bytes — so a fault in the
-            secret key cannot also corrupt the key the signature is checked
-            against. When omitted, the public key is derived from sk_bytes.
+        verify_pk_bytes: Optional public key for verify-after-sign. It must
+            be the public key of sk_bytes (SHAKE256 of it equals the tr stored
+            in the secret key) or signing raises RuntimeError; a fault in the
+            secret key then cannot also corrupt the key the signature is
+            checked against. When omitted, the key remembered at keygen is
+            used; a key this process has never seen is derived from sk_bytes
+            once.
 
     Returns:
         Signature bytes (3,309 bytes for ML-DSA-65).
@@ -1140,6 +1233,8 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
     """
     if len(ctx) > 255:
         raise ValueError(f"context string must be <= 255 bytes, got {len(ctx)}")
+    if len(sk_bytes) != _SK_SIZE:
+        raise ValueError(f"secret key must be {_SK_SIZE} bytes, got {len(sk_bytes)}")
     if verify_pk_bytes is not None and len(verify_pk_bytes) != _PK_SIZE:
         raise ValueError(
             f"verify_pk_bytes must be {_PK_SIZE} bytes, got {len(verify_pk_bytes)}"
@@ -1151,13 +1246,12 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
     # requested (pqcrypto uses hedged signing internally).
     if (_HAS_PQCRYPTO and ctx == b""
             and rnd is None and not deterministic):
+        # Public key for verify-after-sign, resolved before signing so a
+        # foreign verify_pk_bytes is refused without producing a signature
+        # and s1, s2 are never decoded in Python for a known key.
+        verify_pk = _verify_public_key_for(sk_bytes, verify_pk_bytes)
         sig = _c_dsa_sign(bytes(sk_bytes), bytes(message))
         # Verify-after-sign (fault injection countermeasure)
-        verify_pk = (
-            bytes(verify_pk_bytes)
-            if verify_pk_bytes is not None
-            else _pk_from_sk(sk_bytes)
-        )
         if not _c_dsa_verify(verify_pk, bytes(message), sig):
             raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
         return sig
@@ -1168,17 +1262,10 @@ def ml_sign(message, sk_bytes, ctx=b"", *, deterministic=False, rnd=None,
         _require_pqcrypto("ML-DSA signing")
 
     m_prime = b"\x00" + bytes([len(ctx)]) + ctx + message
+    pk_bytes = _verify_public_key_for(sk_bytes, verify_pk_bytes)
     sig = _ml_sign_internal(m_prime, sk_bytes, rnd=rnd, deterministic=deterministic)
 
     # Verify-after-sign (fault injection countermeasure)
-    # Extract pk from sk: rho(32) || K(32) || tr(64) = 128 header,
-    # then recompute pk via rho + t1 from the signing computation.
-    # Cheaper: decode pk_bytes from sk and verify directly.
-    pk_bytes = (
-        bytes(verify_pk_bytes)
-        if verify_pk_bytes is not None
-        else _pk_from_sk(sk_bytes)
-    )
     if not _ml_verify_internal(m_prime, sig, pk_bytes):
         raise RuntimeError("ML-DSA verify-after-sign failed (fault detected)")
     return sig

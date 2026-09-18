@@ -32,7 +32,7 @@ branchless arithmetic internally.
 """
 
 from .ed25519 import ed25519_keygen, ed25519_sign, ed25519_verify
-from .ml_dsa import ml_keygen, ml_sign, ml_verify, _pk_from_sk as _ml_pk_from_sk
+from .ml_dsa import ml_keygen, ml_public_key_for, ml_sign, ml_verify
 
 # ── Secure memory utilities (libsodium-backed) ────────────────
 _HAS_SODIUM = False
@@ -268,7 +268,9 @@ def hybrid_dsa_sign(message, sk_bytes, ctx=b"", *, version=HYBRID_DSA_VERSION,
             pk_bytes = bytes(verify_pk_bytes)
         else:
             ed_pk = bytes(ed_sk_buf[32:])  # pk is embedded in ed25519 sk
-            ml_pk = _ml_pk_from_sk(bytes(ml_sk_buf))
+            # ML-DSA pk from the tr-keyed table (keygen filled it); the
+            # secret vectors are not re-expanded in Python for a known key.
+            ml_pk = ml_public_key_for(ml_sk_buf)
             pk_bytes = ed_pk + ml_pk
         if not hybrid_dsa_verify(message, sig, pk_bytes, ctx=ctx, version=version):
             raise RuntimeError("Hybrid DSA verify-after-sign failed (fault detected)")
