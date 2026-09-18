@@ -117,3 +117,57 @@ def test_ml_sign_rejects_verify_pk_not_bound_to_sk(monkeypatch):
     monkeypatch.setenv(ml_dsa.PURE_PYTHON_SECRETS_ENV, "1")
     with pytest.raises(RuntimeError, match="not the public key of this secret key"):
         ml_dsa.ml_sign(b"message", sk, deterministic=True, verify_pk_bytes=other_pk)
+
+
+def test_ml_public_key_for_refuses_corrupt_secret_key(monkeypatch):
+    """A secret key whose stored tr is not SHAKE256 of the public key its
+    s1, s2 derive is refused before either signer runs over it, and the
+    table never holds an unbound entry. A key from pqcrypto's own keygen
+    has the FIPS 204 layout and binds."""
+    has_pqcrypto = ml_dsa._HAS_PQCRYPTO
+    sk, pk = ml_dsa.ml_keygen(_fixture("ml-dsa corrupt tr seed", 32))
+    corrupt = bytearray(sk)
+    corrupt[ml_dsa._TR_OFFSET + 5] ^= 0x01
+    real_pk_from_sk = ml_dsa._pk_from_sk
+    derivations = []
+
+    def _counting_pk_from_sk(secret):
+        derivations.append(1)
+        return real_pk_from_sk(secret)
+
+    monkeypatch.setattr(ml_dsa, "_pk_from_sk", _counting_pk_from_sk)
+    monkeypatch.setattr(ml_dsa, "_HAS_PQCRYPTO", True)
+    monkeypatch.setattr(
+        ml_dsa,
+        "_c_dsa_sign",
+        lambda *_args: pytest.fail("a signature was produced with a corrupt key"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ml_dsa,
+        "_ml_sign_internal",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a signature was produced with a corrupt key"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="secret key is corrupt"):
+        ml_dsa.ml_public_key_for(corrupt)
+    with pytest.raises(RuntimeError, match="secret key is corrupt"):
+        ml_dsa.ml_sign(b"message", corrupt)
+    monkeypatch.setattr(ml_dsa, "_HAS_PQCRYPTO", False)
+    monkeypatch.setenv(ml_dsa.PURE_PYTHON_SECRETS_ENV, "1")
+    with pytest.raises(RuntimeError, match="secret key is corrupt"):
+        ml_dsa.ml_sign(b"message", corrupt, deterministic=True)
+    assert derivations == [1, 1, 1]
+    assert ml_dsa._cached_public_key(ml_dsa._tr_of_sk(corrupt)) is None
+    assert ml_dsa._cached_public_key(ml_dsa._tr_of_sk(sk)) == pk
+
+    if has_pqcrypto:
+        from pqcrypto.sign.ml_dsa_65 import generate_keypair
+
+        monkeypatch.setattr(ml_dsa, "_pk_from_sk", real_pk_from_sk)
+        c_pk, c_sk = generate_keypair()
+        assert ml_dsa._cached_public_key(ml_dsa._tr_of_sk(c_sk)) is None
+        assert ml_dsa.ml_public_key_for(c_sk) == c_pk
+        assert ml_dsa._cached_public_key(ml_dsa._tr_of_sk(c_sk)) == c_pk

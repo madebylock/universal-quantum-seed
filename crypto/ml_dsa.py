@@ -850,10 +850,11 @@ def ml_public_key_for(sk_bytes):
 
     Keys made by ml_keygen, and public keys a caller has passed to ml_sign
     as verify_pk_bytes, are answered from the tr-keyed table without
-    touching s1 or s2. Any other key is derived once with _pk_from_sk and,
-    when it binds to the tr stored in the secret key, remembered so the
-    pure-Python derivation runs at most once per key per process. Callers
-    that hold the public key should pass it to ml_sign instead.
+    touching s1 or s2. Any other key is derived once with _pk_from_sk,
+    must bind to the tr stored in the secret key (a corrupt key raises
+    RuntimeError before any signer runs over it) and is then remembered so
+    the pure-Python derivation runs at most once per key per process.
+    Callers that hold the public key should pass it to ml_sign instead.
     """
     if len(sk_bytes) != _SK_SIZE:
         raise ValueError(f"secret key must be {_SK_SIZE} bytes, got {len(sk_bytes)}")
@@ -862,8 +863,17 @@ def ml_public_key_for(sk_bytes):
     if pk is not None:
         return pk
     pk = bytes(_pk_from_sk(bytes(sk_bytes)))
-    if _public_key_binds_to_tr(pk, tr):
-        _remember_public_key(tr, pk)
+    if not _public_key_binds_to_tr(pk, tr):
+        # The tr stored in sk is not SHAKE256 of the key its s1, s2 derive:
+        # a corrupt or non-FIPS-204 secret key. Refuse it here, before any
+        # signer runs over it, instead of handing back an unbound key that
+        # verify-after-sign would only reject after signing. It is not
+        # remembered under its tr (an unbound entry could shadow a real key).
+        raise RuntimeError(
+            "ML-DSA secret key is corrupt: its tr does not bind to the public "
+            "key derived from it"
+        )
+    _remember_public_key(tr, pk)
     return pk
 
 
